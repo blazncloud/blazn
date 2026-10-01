@@ -224,6 +224,66 @@ func (b *MicroK8sBackend) Retire(ctx context.Context, name, uid string) (bool, e
 	return true, nil
 }
 
+// WorkspaceNodeLabel binds a Blazn node to its workspace. Kubelets cannot set
+// labels under node-restriction.kubernetes.io/ once NodeRestriction is
+// enforced, so only this issuer writes it.
+const WorkspaceNodeLabel = "node-restriction.kubernetes.io/blazn-workspace"
+
+// Assign labels a Blazn worker's Node with its workspace. It returns false
+// when the label is already exactly present, and refuses a Node bound to a
+// different workspace, a control-plane Node, or one without a Blazn marker.
+func (b *MicroK8sBackend) Assign(ctx context.Context, name, uid, workspaceID string) (bool, error) {
+	if err := b.validateConfiguration(); err != nil {
+		return false, err
+	}
+	if !namePattern.MatchString(name) || !uuidPattern.MatchString(uid) || !uuidPattern.MatchString(workspaceID) {
+		return false, fmt.Errorf("worker assignment binding is invalid")
+	}
+	out, err := b.Runner.Run(ctx, b.KubectlPath, []string{"get", "node", name, "-o", "json"})
+	if err != nil {
+		return false, err
+	}
+	var node struct {
+		Metadata struct {
+			Name, UID, ResourceVersion string
+			Labels                     map[string]string
+		} `json:"metadata"`
+		Spec struct {
+			Taints []struct{ Key, Value, Effect string } `json:"taints"`
+		} `json:"spec"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&node); err != nil || node.Metadata.Name != name || node.Metadata.ResourceVersion == "" {
+		return false, fmt.Errorf("MicroK8s returned an invalid Node observation")
+	}
+	if node.Metadata.UID != uid {
+		return false, &ProtocolError{Code: "binding_conflict", Message: "Node UID differs from the activated binding"}
+	}
+	_, controlPlane := node.Metadata.Labels["node-role.kubernetes.io/control-plane"]
+	_, master := node.Metadata.Labels["node-role.kubernetes.io/master"]
+	blazn := node.Metadata.Labels["blazn.dev/node"] == "true"
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "blazn.dev/sandbox-node" && taint.Value == "true" && taint.Effect == "NoSchedule" {
+			blazn = true
+		}
+		if taint.Key == "blazn.dev/retired" {
+			return false, &ProtocolError{Code: "assign_rejected", Message: "retired Node cannot be assigned"}
+		}
+	}
+	if !blazn || controlPlane || master {
+		return false, &ProtocolError{Code: "assign_rejected", Message: "Node is not a Blazn worker"}
+	}
+	if current, present := node.Metadata.Labels[WorkspaceNodeLabel]; present {
+		if current == workspaceID {
+			return false, nil
+		}
+		return false, &ProtocolError{Code: "binding_conflict", Message: "Node is bound to a different workspace"}
+	}
+	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"label", "node", name, WorkspaceNodeLabel + "=" + workspaceID, "--resource-version=" + node.Metadata.ResourceVersion}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (BackendIssue, error) {
 	if err := b.Healthy(ctx); err != nil {
 		return BackendIssue{}, err

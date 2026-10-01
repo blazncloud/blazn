@@ -49,6 +49,18 @@ metadata:
 spec:
   clusterQueue: BLAZN_EXISTING_CLUSTER_QUEUE
 ---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: blazn-sandboxes
+  namespace: blazn-poc-sandboxes
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+spec:
+  clusterQueue: blazn-sandboxes
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -125,8 +137,8 @@ spec:
     message: "Sandbox names must be canonical lowercase UUIDs"
   - expression: "object.metadata.labels['blazn.dev/managed'] == 'true' && object.metadata.labels['blazn.dev/sandbox-id'] == object.metadata.name && object.metadata.labels['blazn.dev/workspace'].matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') && size(object.metadata.labels['blazn.dev/owner']) > 0"
     message: "Sandbox must carry the managed, workspace, owner, and sandbox-id labels"
-  - expression: "object.spec.podTemplate.metadata.labels['kueue.x-k8s.io/queue-name'] == 'blazn-poc' && object.spec.podTemplate.metadata.labels['blazn.dev/managed'] == 'true' && object.spec.podTemplate.metadata.labels['blazn.dev/workspace'] == object.metadata.labels['blazn.dev/workspace'] && object.spec.podTemplate.metadata.labels['blazn.dev/owner'] == object.metadata.labels['blazn.dev/owner'] && object.spec.podTemplate.metadata.labels['blazn.dev/sandbox-id'] == object.metadata.name"
-    message: "Sandbox podTemplate must mirror the object identity labels and target the blazn-poc LocalQueue"
+  - expression: "object.spec.podTemplate.metadata.labels['kueue.x-k8s.io/queue-name'] in ['blazn-poc', 'blazn-sandboxes'] && object.spec.podTemplate.metadata.labels['blazn.dev/managed'] == 'true' && object.spec.podTemplate.metadata.labels['blazn.dev/workspace'] == object.metadata.labels['blazn.dev/workspace'] && object.spec.podTemplate.metadata.labels['blazn.dev/owner'] == object.metadata.labels['blazn.dev/owner'] && object.spec.podTemplate.metadata.labels['blazn.dev/sandbox-id'] == object.metadata.name"
+    message: "Sandbox podTemplate must mirror the object identity labels and target a Blazn LocalQueue"
   - expression: "object.metadata.annotations['sandboxes.blazn.dev/trust-level'] == 'approved_non_sensitive_poc' && size(object.metadata.annotations['sandboxes.blazn.dev/expires-at']) > 0 && object.metadata.annotations['sandboxes.blazn.dev/create-intent-digest'].matches('^sha256:[0-9a-f]{64}$') && object.metadata.annotations['sandboxes.blazn.dev/artifact-contract-digest'].matches('^sha256:[0-9a-f]{64}$')"
     message: "Sandbox must carry the reviewed trust, expiry, and intent-digest annotations"
   - expression: "object.spec.shutdownPolicy == 'Delete'"
@@ -137,8 +149,8 @@ spec:
     message: "Sandbox Pods must not restart in place"
   - expression: "!has(variables.pod.runtimeClassName) || variables.pod.runtimeClassName == ''"
     message: "Sandbox Pods may not select a RuntimeClass until one is separately qualified"
-  - expression: "variables.pod.nodeSelector['blazn.dev/sandbox-eligible'] == 'true' && size(variables.pod.nodeSelector) == 2 && variables.pod.nodeSelector['kubernetes.io/arch'] in ['amd64', 'arm64']"
-    message: "Sandbox scheduling must use exactly the eligibility selector and one reviewed architecture"
+  - expression: "variables.pod.nodeSelector['blazn.dev/sandbox-eligible'] == 'true' && variables.pod.nodeSelector['kubernetes.io/arch'] in ['amd64', 'arm64'] && (size(variables.pod.nodeSelector) == 2 || (size(variables.pod.nodeSelector) == 3 && variables.pod.nodeSelector['node-restriction.kubernetes.io/blazn-workspace'] == object.metadata.labels['blazn.dev/workspace']))"
+    message: "Sandbox scheduling must use the eligibility selector, one reviewed architecture and, when present, the owning workspace's node label"
   - expression: "(!has(variables.pod.nodeName) || variables.pod.nodeName == '') && (!has(variables.pod.tolerations) || size(variables.pod.tolerations) == 0 || (size(variables.pod.tolerations) == 1 && variables.pod.tolerations[0].key == 'blazn.dev/sandbox-node' && variables.pod.tolerations[0].operator == 'Equal' && variables.pod.tolerations[0].value == 'true' && variables.pod.tolerations[0].effect == 'NoSchedule' && !has(variables.pod.tolerations[0].tolerationSeconds))) && (!has(variables.pod.affinity)) && (!has(variables.pod.priorityClassName) || variables.pod.priorityClassName == '') && (!has(variables.pod.schedulerName) || variables.pod.schedulerName == '')"
     message: "Sandbox Pods may not override scheduling"
   - expression: "(!has(variables.pod.hostNetwork) || variables.pod.hostNetwork == false) && (!has(variables.pod.hostPID) || variables.pod.hostPID == false) && (!has(variables.pod.hostIPC) || variables.pod.hostIPC == false) && (!has(variables.pod.shareProcessNamespace) || variables.pod.shareProcessNamespace == false) && (!has(variables.pod.hostAliases) || size(variables.pod.hostAliases) == 0) && (!has(variables.pod.ephemeralContainers) || size(variables.pod.ephemeralContainers) == 0)"

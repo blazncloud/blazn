@@ -47,6 +47,10 @@ verify_previous_objects() {
   verify_previous_uid namespace/blazn-poc-sandboxes namespace blazn-poc-sandboxes
   verify_previous_uid serviceaccount/blazn-sandbox-runner serviceaccount blazn-sandbox-runner blazn-poc-sandboxes
   verify_previous_uid localqueue/blazn-poc localqueue.kueue.x-k8s.io blazn-poc blazn-poc-sandboxes
+  # Journals sealed before the dedicated queue existed own only eight objects.
+  if jq -e 'has("localqueue/blazn-sandboxes")' "$previous_uids" >/dev/null; then
+    verify_previous_uid localqueue/blazn-sandboxes localqueue.kueue.x-k8s.io blazn-sandboxes blazn-poc-sandboxes
+  fi
   verify_previous_uid role/blazn-agent-sandbox-controller role blazn-agent-sandbox-controller blazn-poc-sandboxes
   verify_previous_uid rolebinding/blazn-agent-sandbox-controller rolebinding blazn-agent-sandbox-controller blazn-poc-sandboxes
   verify_previous_uid validatingadmissionpolicy/blazn-sandbox-boundary validatingadmissionpolicy blazn-sandbox-boundary
@@ -60,13 +64,14 @@ record_uids() {
     printf '"namespace/blazn-poc-sandboxes":"%s",' "$(live_uid namespace blazn-poc-sandboxes)"
     printf '"serviceaccount/blazn-sandbox-runner":"%s",' "$(live_uid serviceaccount blazn-sandbox-runner blazn-poc-sandboxes)"
     printf '"localqueue/blazn-poc":"%s",' "$(live_uid localqueue.kueue.x-k8s.io blazn-poc blazn-poc-sandboxes)"
+    printf '"localqueue/blazn-sandboxes":"%s",' "$(live_uid localqueue.kueue.x-k8s.io blazn-sandboxes blazn-poc-sandboxes)"
     printf '"role/blazn-agent-sandbox-controller":"%s",' "$(live_uid role blazn-agent-sandbox-controller blazn-poc-sandboxes)"
     printf '"rolebinding/blazn-agent-sandbox-controller":"%s",' "$(live_uid rolebinding blazn-agent-sandbox-controller blazn-poc-sandboxes)"
     printf '"validatingadmissionpolicy/blazn-sandbox-boundary":"%s",' "$(live_uid validatingadmissionpolicy blazn-sandbox-boundary)"
     printf '"validatingadmissionpolicybinding/blazn-sandbox-boundary":"%s"' "$(live_uid validatingadmissionpolicybinding blazn-sandbox-boundary)"
     printf '}\n'
   } >"$output"
-  jq -e 'length == 8 and (to_entries | all(.value | test("^[0-9a-f-]{36}$")))' "$output" >/dev/null || { printf 'upgraded owned identities are incomplete\n' >&2; exit 1; }
+  jq -e 'length == 9 and (to_entries | all(.value | test("^[0-9a-f-]{36}$")))' "$output" >/dev/null || { printf 'upgraded owned identities are incomplete\n' >&2; exit 1; }
   mv "$output" "$transaction/owned-uids.json"
   chmod 0600 "$transaction/owned-uids.json"
 }
@@ -92,7 +97,7 @@ fi
 sealed=$transaction/boundary.yaml
 if [ -L "$sealed" ] || [ ! -f "$sealed" ] || [ "$(stat -c '%u:%a:%h' "$sealed")" != 0:400:1 ]; then printf 'sealed boundary manifest is unsafe\n' >&2; exit 1; fi
 [ "$(sha256sum "$sealed" | awk '{print $1}')" = "$BLAZN_EXPECTED_BOUNDARY_SHA256" ] || { printf 'sealed boundary manifest digest mismatch\n' >&2; exit 1; }
-[ "$(grep -c "blazn.dev/phase5-transaction: $BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -ge 8 ] || { printf 'sealed manifest does not carry this transaction identity\n' >&2; exit 1; }
+[ "$(grep -c "blazn.dev/phase5-transaction: $BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -ge 9 ] || { printf 'sealed manifest does not carry this transaction identity\n' >&2; exit 1; }
 phase=$(cat "$transaction/phase")
 case "$phase" in
   complete) supersede_previous; printf 'Phase 5 boundary upgrade transaction is already complete\n'; exit 0 ;;

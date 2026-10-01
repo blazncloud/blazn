@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandbox"
+	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 )
 
 const maxDatabaseURLBytes = 16 * 1024
@@ -136,6 +137,11 @@ func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, erro
 	}
 	if !validAbsoluteFilePath(caFile) || !validAbsoluteFilePath(tokenFile) || caFile == tokenFile {
 		return KubernetesConfig{}, errors.New("sandbox controller Kubernetes credential paths are invalid")
+	}
+	if queue := getenv("BLAZN_SANDBOX_LOCAL_QUEUE"); queue != "" {
+		if err := sandboxcontrol.SetLocalQueue(queue); err != nil {
+			return KubernetesConfig{}, err
+		}
 	}
 	helperImage := getenv("BLAZN_SANDBOX_IO_IMAGE")
 	if !sandbox.IsImmutableOCIReference(helperImage) {

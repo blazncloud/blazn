@@ -336,7 +336,7 @@ func (a *Adapter) finishEnsureCreated(ctx context.Context, request CreateRequest
 	if err := verifyManaged(record, request.WorkspaceID, request.OwnerID); err != nil {
 		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
-	if record.QueueName != QueueName {
+	if !blaznQueue(record.QueueName) {
 		err := adapterError(ErrQueueRequired, 502, "backend did not preserve mandatory queue label", nil)
 		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
@@ -373,7 +373,28 @@ func legacyTolerationSpec(observed json.RawMessage, expected kubeSandboxSpec) ku
 	if _, present := probe.PodTemplate.Spec["tolerations"]; !present {
 		expected.PodTemplate.Spec.Tolerations = nil
 	}
+	expected.PodTemplate.Spec.NodeSelector = legacyNodeSelector(probe.PodTemplate.Spec["nodeSelector"], expected.PodTemplate.Spec.NodeSelector)
 	return expected
+}
+
+// legacyNodeSelector compares a Sandbox or Pod created before workspace
+// placement against the selector without the workspace node label. Its other
+// selectors still require a sandbox-eligible node, so nothing is widened.
+func legacyNodeSelector(observed json.RawMessage, expected map[string]string) map[string]string {
+	var selector map[string]string
+	if json.Unmarshal(observed, &selector) != nil {
+		return expected
+	}
+	if _, present := selector[WorkspaceNodeLabel]; present {
+		return expected
+	}
+	legacy := make(map[string]string, len(expected))
+	for key, value := range expected {
+		if key != WorkspaceNodeLabel {
+			legacy[key] = value
+		}
+	}
+	return legacy
 }
 
 func sameCreateSpec(observed, expected kubeSandbox) bool {
@@ -705,7 +726,7 @@ func (a *Adapter) finalize(ctx context.Context, requestID, workspaceID, ownerID,
 func render(request CreateRequest, artifactContractDigest, createIntentDigest string) kubeSandbox {
 	labels := map[string]string{ManagedLabel: "true", WorkspaceLabel: request.WorkspaceID, OwnerLabel: request.OwnerID, SandboxIDLabel: request.Name}
 	podLabels := cloneMap(labels)
-	podLabels[QueueLabel] = QueueName
+	podLabels[QueueLabel] = localQueue
 	annotations := map[string]string{"sandboxes.blazn.dev/trust-level": string(request.TrustLevel), "sandboxes.blazn.dev/expires-at": request.ExpiresAt.UTC().Format(time.RFC3339Nano)}
 	if encoded, err := json.Marshal(request.Artifacts); err == nil {
 		annotations["sandboxes.blazn.dev/artifact-exports"] = string(encoded)
@@ -752,7 +773,7 @@ func renderPodSpec(request CreateRequest) kubePodSpec {
 	}
 	return kubePodSpec{
 		RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,
-		RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true"},
+		RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true", WorkspaceNodeLabel: request.WorkspaceID},
 		Tolerations:     []kubeToleration{SandboxNodeToleration},
 		SecurityContext: map[string]any{"runAsNonRoot": true, "runAsUser": int64(65532), "runAsGroup": int64(65532), "fsGroup": int64(65532), "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
 		Containers: []kubeContainer{{Name: "main", Image: request.Image, Command: append([]string(nil), request.Command...),

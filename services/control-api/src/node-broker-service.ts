@@ -65,6 +65,18 @@ export class NodeBrokerService {
     return result.deleted;
   }
 
+  // assignNode binds an activated worker's Node to the workspace that enrolled
+  // it. The issuer labels only a Blazn worker with the bound UID and refuses
+  // to move a Node that is already bound elsewhere.
+  async assignNode(input: { clusterId: string; nodeName: string; nodeUid: string; workspaceId: string }): Promise<boolean> {
+    if (!input.clusterId || input.clusterId.length > 128 || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(input.nodeName) || !UUID.test(input.nodeUid) || !UUID.test(input.workspaceId)) {
+      invalid("worker assignment binding is invalid");
+    }
+    if (!this.issuer.assign) throw new Error("worker workspace assigner is unavailable");
+    const result = await this.providerCall((signal) => this.issuer.assign!({ clusterId: input.clusterId, expectedNodeName: input.nodeName, nodeUid: input.nodeUid, workspaceId: input.workspaceId }, signal));
+    return result.assigned;
+  }
+
   async issue(
     idempotencyKey: string,
     request: JoinCredentialRequest,

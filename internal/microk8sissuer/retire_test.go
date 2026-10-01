@@ -102,3 +102,46 @@ func TestServiceRetireReportsTheBackendResult(t *testing.T) {
 		t.Fatalf("backend failure must map to a safe protocol error: %v", err)
 	}
 }
+
+func TestBackendAssignBindsOnlyAnUnboundBlaznWorker(t *testing.T) {
+	const workspace = "11111111-2222-4333-8444-555555555555"
+	node := func(labels, taints string) []byte {
+		return []byte(`{"metadata":{"name":"worker-1","uid":"` + retireUID + `","resourceVersion":"41","labels":{` + labels + `}},"spec":{"taints":[` + taints + `]}}`)
+	}
+	sandboxTaint := `{"key":"blazn.dev/sandbox-node","value":"true","effect":"NoSchedule"}`
+	for _, tc := range []struct {
+		name, labels, taints, uid string
+		assigned                  bool
+		code                      string
+	}{
+		{name: "new Blazn worker", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint, uid: retireUID, assigned: true},
+		{name: "already bound here", labels: `"` + WorkspaceNodeLabel + `":"` + workspace + `"`, taints: sandboxTaint, uid: retireUID},
+		{name: "bound elsewhere", labels: `"` + WorkspaceNodeLabel + `":"99999999-2222-4333-8444-555555555555"`, taints: sandboxTaint, uid: retireUID, code: "binding_conflict"},
+		{name: "not a Blazn node", labels: `"kubernetes.io/hostname":"worker-1"`, uid: retireUID, code: "assign_rejected"},
+		{name: "retired", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint + `,{"key":"blazn.dev/retired","value":"true","effect":"NoExecute"}`, uid: retireUID, code: "assign_rejected"},
+		{name: "control plane", labels: `"blazn.dev/node":"true","node-role.kubernetes.io/control-plane":""`, taints: sandboxTaint, uid: retireUID, code: "assign_rejected"},
+		{name: "different UID", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint, uid: "7f3c2a10-0000-4000-8000-000000000002", code: "binding_conflict"},
+	} {
+		runner := &scriptedRunner{outputs: map[string][]byte{"get": node(tc.labels, tc.taints), "label": nil}}
+		assigned, err := testBackend(runner).Assign(context.Background(), "worker-1", tc.uid, workspace)
+		labelled := false
+		for _, call := range runner.calls {
+			if strings.HasPrefix(call, "label ") {
+				labelled = true
+				if call != "label node worker-1 "+WorkspaceNodeLabel+"="+workspace+" --resource-version=41" {
+					t.Fatalf("%s: label call %q", tc.name, call)
+				}
+			}
+		}
+		var protocol *ProtocolError
+		if tc.code != "" {
+			if !errors.As(err, &protocol) || protocol.Code != tc.code || assigned || labelled {
+				t.Fatalf("%s: assigned=%v labelled=%v err=%v", tc.name, assigned, labelled, err)
+			}
+			continue
+		}
+		if err != nil || assigned != tc.assigned || labelled != tc.assigned {
+			t.Fatalf("%s: assigned=%v labelled=%v err=%v", tc.name, assigned, labelled, err)
+		}
+	}
+}

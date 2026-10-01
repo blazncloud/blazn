@@ -5,7 +5,7 @@ Sandbox foundation the Phase 5 controller deploys into. Nothing here is
 applied to the shared cluster except through the sealed, journaled
 `install-boundary.sh` transaction under the authoritative live-cluster lock.
 
-The rendered boundary contains exactly eight documents:
+The rendered boundary contains exactly nine documents:
 
 - Namespaces `blazn-poc-system` and `blazn-poc-sandboxes`, both enforcing the
   Restricted Pod Security profile and carrying the transaction identity.
@@ -13,6 +13,11 @@ The rendered boundary contains exactly eight documents:
   `blazn-poc-sandboxes`.
 - LocalQueue `blazn-poc` in `blazn-poc-sandboxes`, served through
   `kueue.x-k8s.io/v1beta1` and targeting the reviewed existing ClusterQueue.
+- LocalQueue `blazn-sandboxes` targeting the dedicated `blazn-sandboxes`
+  ClusterQueue (`../phase5-queue/`), whose flavor selects only
+  `blazn.dev/sandbox-eligible` nodes. The controller routes Pods to it when
+  `BLAZN_SANDBOX_LOCAL_QUEUE=blazn-sandboxes`; the logical queue the API
+  records stays `blazn-poc`.
 - A namespace-scoped Role and RoleBinding granting the upstream
   `agent-sandbox-controller` ServiceAccount its mutations only inside
   `blazn-poc-sandboxes`. No ClusterRole or ClusterRoleBinding is added.
@@ -43,7 +48,7 @@ The upgrade verifies every prior UID, preserves namespaces and Secrets, and
 records the successor before marking the prior journal superseded.
 
 `good-sandbox.py` is the executable statement of that contract: it renders
-the adapter-exact object plus twenty-two reviewed mutations, and
+the adapter-exact object plus twenty-three reviewed mutations, and
 `test-phase5-boundary-disposable.sh` proves on a disposable kind cluster
 that the good object is admitted while every mutation is denied by the rule
 that owns it, plus a permitted-but-wrong creator identity, update fencing,

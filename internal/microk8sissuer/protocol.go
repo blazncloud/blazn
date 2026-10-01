@@ -30,6 +30,19 @@ type Request struct {
 	WorkerOnly       bool   `json:"workerOnly,omitempty"`
 	ProviderHandle   string `json:"providerHandle,omitempty"`
 	NodeUID          string `json:"nodeUid,omitempty"`
+	WorkspaceID      string `json:"workspaceId,omitempty"`
+}
+
+// AssignResponse reports that a Blazn worker's Node is bound to the workspace
+// that enrolled it. Assigned is false when the label was already present.
+type AssignResponse struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Operation     string `json:"operation"`
+	ClusterID     string `json:"clusterId"`
+	NodeName      string `json:"nodeName"`
+	NodeUID       string `json:"nodeUid"`
+	WorkspaceID   string `json:"workspaceId"`
+	Assigned      bool   `json:"assigned"`
 }
 
 // RetireResponse reports the removal of a retired Blazn worker's Node object.
@@ -117,6 +130,13 @@ func DecodeRequest(data []byte) (Request, error) {
 		}
 		if len(req.ClusterID) < 1 || len(req.ClusterID) > 128 || !namePattern.MatchString(req.ExpectedNodeName) || !uuidPattern.MatchString(req.NodeUID) {
 			return Request{}, invalid("retire binding is invalid")
+		}
+	case "assign":
+		for _, key := range []string{"clusterId", "expectedNodeName", "nodeUid", "workspaceId"} {
+			allowed[key] = true
+		}
+		if len(req.ClusterID) < 1 || len(req.ClusterID) > 128 || !namePattern.MatchString(req.ExpectedNodeName) || !uuidPattern.MatchString(req.NodeUID) || !uuidPattern.MatchString(req.WorkspaceID) {
+			return Request{}, invalid("assign binding is invalid")
 		}
 	case "revoke":
 		allowed["providerHandle"] = true

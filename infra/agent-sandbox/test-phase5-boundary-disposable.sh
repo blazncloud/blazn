@@ -121,10 +121,11 @@ expect_denied() {
 }
 expect_denied bad-name 'canonical lowercase UUIDs' "$controller"
 expect_denied missing-managed-label 'sandbox-id labels|no such key' "$controller"
-expect_denied wrong-queue 'blazn-poc LocalQueue' "$controller"
+expect_denied wrong-queue 'Blazn LocalQueue' "$controller"
 expect_denied tag-image 'digest-pinned' "$controller"
 expect_denied host-network 'host namespaces' "$controller"
 expect_denied extra-node-selector 'eligibility selector' "$controller"
+expect_denied foreign-workspace-node 'eligibility selector' "$controller"
 expect_denied wrong-service-account 'tokenless blazn-sandbox-runner' "$controller"
 expect_denied token-automount 'tokenless blazn-sandbox-runner' "$controller"
 expect_denied over-cpu 'reviewed bounds' "$controller"
