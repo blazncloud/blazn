@@ -14,6 +14,7 @@ they are deployed. Operating procedures are in
 | `export.py` | Regenerates everything above from the live cluster; `--check` reports drift. |
 | `deploy-api.sh` | Builds, migrates, publishes and rolls out the control API. |
 | `node-broker.sh` | Restarts the node broker container on the issuer host. |
+| `sender-domain/` | Prepared, not applied: DNS records, a DNS check and the steps for moving the sign-in email sender to `mail.blazn.frontro.com`. |
 | `scripts/` | Helpers used by `deploy-api.sh` on the build and cluster hosts. |
 
 The manifests are generated, not hand-written: `export.py` reads the live

@@ -1,0 +1,32 @@
+{
+  "Comment": "Blazn sign-in email sender domain mail.blazn.frontro.com (Resend). Replace REPLACE_WITH_DKIM_VALUE_FROM_RESEND and confirm the CNAME target against the Resend dashboard before applying.",
+  "Changes": [
+    {
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "send.mail.blazn.frontro.com.",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [{ "Value": "send.forge.rmta.net." }]
+      }
+    },
+    {
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "resend._domainkey.mail.blazn.frontro.com.",
+        "Type": "TXT",
+        "TTL": 300,
+        "ResourceRecords": [{ "Value": "\"REPLACE_WITH_DKIM_VALUE_FROM_RESEND\"" }]
+      }
+    },
+    {
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "_dmarc.mail.blazn.frontro.com.",
+        "Type": "TXT",
+        "TTL": 300,
+        "ResourceRecords": [{ "Value": "\"v=DMARC1; p=none;\"" }]
+      }
+    }
+  ]
+}
