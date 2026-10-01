@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash,randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import type { AgentHarnessPrincipal,JsonDocument } from "./agent-harness-types.j
 import { agentVersionDigest,harnessProfileDigest } from "./harness-contract.js";
 import { AgentRunControllerService } from "./agent-run-controller-service.js";
 import { PgAgentRunControllerStore } from "./agent-run-controller-store.js";
+import { PgAgentRunExecutionStore } from "./agent-run-execution-store.js";
 import { createDatabase } from "./db.js";
 import { RunService } from "./run-service.js";
 import { PgRunStore } from "./run-store.js";
@@ -153,6 +154,81 @@ test("PostgreSQL Agent Run controller freezes compatibility and fences allocatio
     await assert.rejects(()=>controllerDb.query("SELECT * FROM agent_run_bindings"),pgCode("42501"));
     await assert.rejects(()=>developmentControllerDb.query("SELECT * FROM agent_run_controller_claim($1,$2)",["development-controller",30]),pgCode("42501"));
     await assert.rejects(()=>controllerDb.query("SELECT * FROM development_controller_claim($1,$2)",["agent-run-controller",30]),pgCode("42501"));
+
+    // Agent Run execution (migration 040): the API admits the Run with its Sandbox, and the controller relays
+    // messages, issues Run-bound grants, stores output documents, and releases the Sandbox, all under its lease.
+    const executionStore=new PgAgentRunExecutionStore(controllerDb),deviceId=randomUUID(),sessionId=randomUUID();
+    await admin.query("INSERT INTO devices(id,user_id,name,platform,public_key) VALUES($1,$2,'test','linux','public')",[deviceId,principal.userId]);
+    // The requester's session has already expired: an Agent Run must outlive it.
+    await admin.query("INSERT INTO sessions(id,user_id,device_id,token_hash,refresh_token_hash,access_expires_at,refresh_expires_at) VALUES($1,$2,$3,$4,$5,now()-interval '1 hour',now()-interval '1 hour')",[sessionId,principal.userId,deviceId,"s".repeat(64),"r".repeat(64)]);
+    const execRun=(await create()).run,execSandbox=await seedSandbox(admin,workspaceId,principal.userId,templateId,String(templateRef.versionId),String(templateRef.digest).slice(7));
+    const start=async(sandbox:string)=>(await runtime.query<{outcome:string}>("SELECT agent_run_start_execution($1,$2,$3,$4,$5,$6,$7) outcome",[execRun.id,workspaceId,agentVersion.id,profile.id,sandbox,principal.userId,sessionId])).rows[0]?.outcome;
+    await assert.rejects(()=>controllerDb.query("SELECT agent_run_start_execution($1,$2,$3,$4,$5,$6,$7)",[execRun.id,workspaceId,agentVersion.id,profile.id,execSandbox,principal.userId,sessionId]),pgCode("42501"));
+    assert.equal(await start(execSandbox),"accepted");assert.equal(await start(execSandbox),"accepted","admission is idempotent");assert.equal(await start(sandboxId),"conflict");
+    await runService.sendRunMessage(principal,workspaceId,projectId,execRun.id,randomUUID(),{kind:"prompt",content:"hello agent"});
+    const execClaim=await controller.claim("agent-run-exec",60);assert.equal(execClaim?.runId,execRun.id);
+    const lease={runId:execRun.id,workerId:"agent-run-exec",leaseToken:execClaim!.leaseToken},stale={...lease,leaseToken:randomUUID()};
+    assert.equal(await executionStore.execution(stale),undefined);
+    let view=await executionStore.execution(lease);assert.equal(view?.sandboxId,execSandbox);assert.equal(view?.nodeId,undefined);assert.equal(view?.runStatus,"queued");assert.equal(view?.outboxSequence,0);assert.ok(view?.instructions);
+    const sha=(value:string)=>createHash("sha256").update(value).digest("hex");
+    assert.equal(await executionStore.issueGrant(lease,randomUUID(),sha("early"),"exec",60),false,"grant issued before the Sandbox was bound");
+    const execSandboxLease=await activateSandboxLease(admin,execSandbox,"sandbox-observer-exec");
+    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,execSandbox,nodeId,execSandboxLease),true);
+    view=await executionStore.execution(lease);assert.equal(view?.nodeId,nodeId);
+    assert.equal(await controller.bindSandbox(execRun.id,"agent-run-exec",execClaim!.leaseToken,view!.runVersion,nodeId,execSandbox),true);
+    const grantId=randomUUID(),grantToken="g".repeat(43);
+    assert.equal(await executionStore.issueGrant(stale,randomUUID(),sha("stale"),"exec",60),false);
+    await assert.rejects(()=>executionStore.issueGrant(lease,randomUUID(),sha("ttl"),"exec",61),pgCode("22023"));
+    assert.equal(await executionStore.issueGrant(lease,grantId,sha(grantToken),"exec",60),true);
+    const consume=(id:string,token:string,kind="exec")=>sandboxControllerDb.query("SELECT * FROM sandbox_controller_consume_access_grant_v1($1,$2,$3)",[id,sha(token),kind]);
+    assert.equal((await consume(grantId,"wrong-token-wrong-token-wrong-token-wrong-token")).rows.length,0);
+    assert.equal((await consume(grantId,grantToken,"upload")).rows.length,0);
+    assert.equal((await consume(grantId,grantToken)).rows[0]?.sandbox_id,execSandbox,"a Run-bound grant does not depend on the requester's session");
+    assert.equal((await consume(grantId,grantToken)).rows.length,0,"grant was consumed twice");
+    const fencedGrant=randomUUID();assert.equal(await executionStore.issueGrant(lease,fencedGrant,sha("fenced-token"),"download",60),true);
+    await admin.query("UPDATE agent_run_jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE run_id=$1",[execRun.id]);
+    assert.equal((await consume(fencedGrant,"fenced-token","download")).rows.length,0,"grant outlived the controller lease");
+    await admin.query("UPDATE agent_run_jobs SET lease_expires_at=clock_timestamp()+interval '60 seconds' WHERE run_id=$1",[execRun.id]);
+
+    const message=await executionStore.claimMessage(lease,30);assert.equal(message?.content,"hello agent");assert.equal(message?.kind,"prompt");assert.equal(message?.resumed,false);
+    const resumed=await executionStore.claimMessage(lease,30);assert.equal(resumed?.messageId,message!.messageId);assert.equal(resumed?.claimId,message!.claimId);assert.equal(resumed?.resumed,true);
+    assert.equal(await executionStore.claimMessage(stale,30),undefined);
+    const replyId=await executionStore.recordReply(lease,7,message!.messageId,"hi human");assert.ok(replyId);
+    assert.equal(await executionStore.recordReply(lease,7,message!.messageId,"hi human"),replyId,"a replayed harness event created a second reply");
+    assert.equal(await executionStore.recordReply(stale,8,undefined,"fenced"),undefined);
+    assert.equal(await executionStore.recordEvent(lease,7,"turn-completed",{status:"completed"}),true);assert.equal(await executionStore.recordEvent(lease,7,"turn-completed",{status:"completed"}),true);
+    assert.equal(await executionStore.recordEvent(stale,8,"turn-completed",{}),false);
+    await assert.rejects(()=>executionStore.recordEvent(lease,8,"Bad Type",{}),pgCode("22023"));
+    assert.equal((await executionStore.execution(lease))?.outboxSequence,7);
+    assert.equal(await executionStore.deliverMessage(lease,message!.messageId,randomUUID()),false);
+    assert.equal(await executionStore.deliverMessage(lease,message!.messageId,message!.claimId),true);assert.equal(await executionStore.deliverMessage(lease,message!.messageId,message!.claimId),true);
+    const conversation=(await runService.listRunMessages(principal,workspaceId,projectId,execRun.id)).items;
+    assert.deepEqual(conversation.map(item=>[item.ordinal,item.role,item.kind,item.status,item.content]),[[1,"user","prompt","delivered","hello agent"],[2,"assistant","reply","delivered","hi human"]]);
+    assert.equal(conversation[1]?.parentMessageId,message!.messageId);
+    const execEvents=(await admin.query<{type:string}>("SELECT type FROM run_events WHERE run_id=$1 ORDER BY sequence",[execRun.id])).rows.map(row=>row.type);
+    assert.equal(execEvents.filter(type=>type==="agent.run.reply").length,1);assert.equal(execEvents.filter(type=>type==="agent.run.turn-completed").length,1);assert.ok(execEvents.includes("agent.run.message-claimed"));assert.ok(execEvents.includes("agent.run.message-delivered"));
+    await assert.rejects(()=>runtime.query("INSERT INTO run_messages(id,workspace_id,project_id,run_id,ordinal,role,kind,status,content,content_digest,created_by) VALUES($1,$2,$3,$4,9,'user','reply','queued','x',$5,$6)",[randomUUID(),workspaceId,projectId,execRun.id,`sha256:${sha("x")}`,principal.userId]),pgCode("23514"));
+
+    const patchBytes=Buffer.from("diff --git a/file b/file\n"),summaryBytes=Buffer.from("# Run summary\n");
+    const patchArtifact=await executionStore.recordArtifact(lease,"patch",patchBytes),summaryArtifact=await executionStore.recordArtifact(lease,"summary",summaryBytes);
+    assert.ok(patchArtifact);assert.ok(summaryArtifact);assert.equal(await executionStore.recordArtifact(lease,"patch",patchBytes),patchArtifact);
+    assert.equal(await executionStore.recordArtifact(lease,"patch",Buffer.from("other")),undefined,"an Artifact was replaced with different content");
+    assert.equal(await executionStore.recordArtifact(stale,"summary",summaryBytes),undefined);
+    assert.deepEqual((await runtime.query<{content:Buffer}>("SELECT content FROM agent_run_artifact_blobs WHERE artifact_id=$1",[patchArtifact])).rows[0]?.content,patchBytes);
+    await assert.rejects(()=>controllerDb.query("SELECT * FROM agent_run_artifact_blobs"),pgCode("42501"));
+    await assert.rejects(()=>controllerDb.query("SELECT * FROM agent_run_executions"),pgCode("42501"));
+    assert.equal(await executionStore.releaseSandboxes(10),0,"the Sandbox of a running Run was released");
+    view=await executionStore.execution(lease);
+    assert.equal(await controller.finalize(execRun.id,"agent-run-exec",execClaim!.leaseToken,view!.runVersion,"succeeded",undefined,[patchArtifact!,summaryArtifact!],3,[]),true);
+    assert.equal(await executionStore.issueGrant(lease,randomUUID(),sha("after"),"exec",60),false,"grant issued after the Run ended");
+    assert.equal(await executionStore.releaseSandboxes(10),0,"release must wait for the Sandbox's running operation");
+    // Stand in for the Sandbox controller finishing its create operation.
+    await admin.query("DELETE FROM agent_run_sandbox_node_observations WHERE sandbox_id=$1",[execSandbox]);
+    await admin.query("DELETE FROM sandbox_workload_admissions WHERE sandbox_id=$1",[execSandbox]);
+    await admin.query("DELETE FROM sandbox_operations WHERE sandbox_id=$1",[execSandbox]);
+    assert.equal(await executionStore.releaseSandboxes(10),1);assert.equal(await executionStore.releaseSandboxes(10),0);
+    const releasedSandbox=await admin.query("SELECT s.state,s.desired_state,o.type,o.status,o.idempotency_key FROM sandboxes s JOIN sandbox_operations o ON o.sandbox_id=s.id WHERE s.id=$1",[execSandbox]);
+    assert.deepEqual(releasedSandbox.rows,[{state:"stopping",desired_state:"stopped",type:"stop",status:"pending",idempotency_key:`agent-run-${execRun.id}`}]);
   }finally{await admin.query("DELETE FROM workspaces WHERE id=$1",[workspaceId]).catch(()=>{});await admin.query("DELETE FROM users WHERE id=$1",[principal.userId]).catch(()=>{});await Promise.all([runtime.end(),admin.end(),controllerDb.end(),developmentControllerDb.end(),sandboxControllerDb.end()]);}
 });
 

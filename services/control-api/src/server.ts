@@ -26,6 +26,7 @@ import { ProjectHttpRouter } from "./project-http.js";
 import { ProjectService } from "./project-service.js";
 import { PgProjectStore } from "./project-store.js";
 import { RunHttpRouter } from "./run-http.js";
+import { AgentRunAdmission, artifactContentReader } from "./agent-run-admission.js";
 import { AgentHarnessHttpRouter } from "./agent-harness-http.js";
 import { AgentHarnessService } from "./agent-harness-service.js";
 import { PgAgentHarnessStore } from "./agent-harness-store.js";
@@ -55,10 +56,12 @@ const emailLogin = emailLoginFromEnvironment();
 const oidcKey = config.zitadel ? oidcCookieKey(config.zitadel.cookieKey) : undefined;
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const projectRouter = new ProjectHttpRouter(new ProjectService(new PgProjectStore(database)));
-const runRouter = new RunHttpRouter(new RunService(new PgRunStore(database)));
+
 const agentHarnessRouter = new AgentHarnessHttpRouter(new AgentHarnessService(new PgAgentHarnessStore(database)));
 const developmentRouter = new DevelopmentHttpRouter(new DevelopmentService(new PgDevelopmentStore(database)));
-const sandboxRouter = new SandboxHttpRouter(new SandboxService(new PgSandboxStore(database, config.publicUrl), undefined, config.publicUrl));
+const sandboxService = new SandboxService(new PgSandboxStore(database, config.publicUrl), undefined, config.publicUrl);
+const sandboxRouter = new SandboxHttpRouter(sandboxService);
+const runRouter = new RunHttpRouter(new RunService(new PgRunStore(database)), new AgentRunAdmission(database, sandboxService), artifactContentReader(database));
 const sandboxAccessProxy = SandboxAccessProxy.fromEnvironment();
 const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
 const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
@@ -547,7 +550,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   }
   if (runRouter.matches(url.pathname)) {
     const session = await authenticate(request);
-    return runRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
+    return runRouter.handle(request, response, url, { userId: session.userId, sessionId: session.sessionId, email: session.email, displayName: session.displayName });
   }
   if (projectRouter.matches(url.pathname)) {
     const session = await authenticate(request);
