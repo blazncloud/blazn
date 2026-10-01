@@ -196,8 +196,8 @@ The Blazn routes for the retired services were removed from the shared
 gateway's ConfigMap (`moments-direct/moments-direct-gateway`, key
 `dynamic.yml`). The previous file is saved on `ben1` as
 `~/blazn-backups/moments-direct-gateway-dynamic-before-20261001.yml`. The
-gateway had not been restarted when this was written, so the stale routes
-still answer (502 or 500) until its next restart.
+gateway was restarted on 2026-10-01 to apply it (about 6 seconds of downtime);
+the retired hosts and paths now answer 404.
 
 **The gateway only reads that file at startup.** Traefik is configured with
 `--providers.file.filename`, which does not notice a ConfigMap update (the
