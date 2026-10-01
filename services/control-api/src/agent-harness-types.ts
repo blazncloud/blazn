@@ -4,7 +4,7 @@ export type AgentHarnessPrincipal = WorkspacePrincipal;
 export type AgentStatus = "active" | "inactive" | "archived";
 export type HarnessDefinitionStatus = "approved" | "deprecated" | "prohibited";
 export type HarnessProfileStatus = "approved" | "disabled";
-export type HarnessKind = "hermes" | "codex-cli" | "claude-code" | "generic-cli";
+export type HarnessKind = "hermes" | "codex-cli" | "claude-code" | "generic-cli" | "blazn-agent";
 export type JsonDocument = Record<string, unknown>;
 
 export interface Agent {

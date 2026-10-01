@@ -47,6 +47,10 @@ func (f *fakeRunCommands) CompleteSynthetic(_ context.Context, runID, requestID 
 	return client.RunEnvelope{Run: client.Run{ID: runID, Status: client.RunStatusSucceeded, Version: request.ExpectedVersion + 1}}, nil
 }
 
+func (f *fakeRunCommands) DownloadArtifact(_ context.Context, artifactID string) ([]byte, error) {
+	f.runID = artifactID
+	return []byte("artifact bytes"), nil
+}
 func (f *fakeRunCommands) Create(_ context.Context, requestID string, request client.CreateRunRequest) (client.RunEnvelope, error) {
 	f.requestID, f.createRequest = requestID, request
 	return client.RunEnvelope{Run: client.Run{ID: cliRunID, Kind: request.Kind, ProofClass: request.ProofClass, Status: client.RunStatusQueued, Version: 1, PlanDigest: request.PlanDigest, InputArtifactIDs: request.InputArtifactIDs, OutputNames: request.OutputNames}}, nil

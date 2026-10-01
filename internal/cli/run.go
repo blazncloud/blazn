@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +32,7 @@ type runCommands interface {
 	Events(context.Context, string, string) (client.RunEventList, error)
 	Progress(context.Context, string) (client.RunProgressList, error)
 	Artifacts(context.Context, string, string) (client.ArtifactList, error)
+	DownloadArtifact(context.Context, string) ([]byte, error)
 }
 
 func (a *App) runRun(format OutputFormat, args []string) int {
@@ -157,11 +161,43 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 		fmt.Fprintf(a.stdout, "run %s %s synthetic receipt recorded\n", result.Run.ID, result.Run.Status)
 		return ExitSuccess
 	case "create":
-		_, flags, _, err := projectPositionalsAndFlags(args[1:], 0, map[string]bool{"kind": false, "proof-class": false, "plan-digest": false, "inputs": true, "outputs": true, "request-id": false})
-		if err != nil || flags["kind"] == "" || flags["proof-class"] == "" || flags["plan-digest"] == "" || flags["request-id"] == "" {
+		_, flags, _, err := projectPositionalsAndFlags(args[1:], 0, map[string]bool{"kind": true, "proof-class": true, "plan-digest": true, "inputs": true, "outputs": true, "request-id": false,
+			"agent-version": true, "harness-profile": true, "arch": true, "expires": true})
+		if err != nil || flags["request-id"] == "" {
+			return a.runUsage(format, errors.New("run create requires --request-id and either --agent-version with --harness-profile, or --kind, --proof-class, and --plan-digest"))
+		}
+		request := client.CreateRunRequest{Kind: flags["kind"], ProofClass: client.ProofClass(flags["proof-class"]), PlanDigest: flags["plan-digest"], InputArtifactIDs: commaList(flags["inputs"]), OutputNames: commaList(flags["outputs"])}
+		if flags["agent-version"] != "" || flags["harness-profile"] != "" {
+			// An Agent Run needs only the Agent selection; the rest has one valid value.
+			if flags["agent-version"] == "" || flags["harness-profile"] == "" {
+				return a.runUsage(format, errors.New("run create needs both --agent-version and --harness-profile for an Agent Run"))
+			}
+			agent := &client.AgentRunRequest{AgentVersionID: flags["agent-version"], HarnessProfileID: flags["harness-profile"], Architecture: flags["arch"]}
+			if flags["expires"] != "" {
+				seconds, parseErr := strconv.Atoi(flags["expires"])
+				if parseErr != nil {
+					return a.runUsage(format, errors.New("run create --expires must be a number of seconds from 300 through 7200"))
+				}
+				agent.ExpiresInSeconds = seconds
+			}
+			request.Agent = agent
+			if request.Kind == "" {
+				request.Kind = "agent.execute"
+			}
+			if request.ProofClass == "" {
+				request.ProofClass = client.ProofClassSandbox
+			}
+			if flags["outputs"] == "" {
+				request.OutputNames = []string{"patch", "summary"}
+			}
+			if request.PlanDigest == "" {
+				digest := sha256.Sum256([]byte("blazn-agent-run-plan-v1\n" + agent.AgentVersionID + "\n" + agent.HarnessProfileID))
+				request.PlanDigest = "sha256:" + hex.EncodeToString(digest[:])
+			}
+		} else if flags["kind"] == "" || flags["proof-class"] == "" || flags["plan-digest"] == "" || flags["arch"] != "" || flags["expires"] != "" {
 			return a.runUsage(format, errors.New("run create requires --kind, --proof-class, --plan-digest, --request-id, and optional comma-separated --inputs/--outputs"))
 		}
-		result, err := commands.Create(ctx, flags["request-id"], client.CreateRunRequest{Kind: flags["kind"], ProofClass: client.ProofClass(flags["proof-class"]), PlanDigest: flags["plan-digest"], InputArtifactIDs: commaList(flags["inputs"]), OutputNames: commaList(flags["outputs"])})
+		result, err := commands.Create(ctx, flags["request-id"], request)
 		if err != nil {
 			return a.writeRunError(format, err)
 		}
@@ -321,6 +357,23 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 		if result.NextCursor != nil {
 			fmt.Fprintf(a.stdout, "next cursor: %s\n", *result.NextCursor)
 		}
+		return ExitSuccess
+	case "download":
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"output": false})
+		if err != nil || flags["output"] == "" {
+			return a.runUsage(format, errors.New("run download requires ARTIFACT and --output FILE"))
+		}
+		content, err := commands.DownloadArtifact(ctx, positionals[0])
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if err := os.WriteFile(flags["output"], content, 0o600); err != nil {
+			return a.writeError(format, ExitFailure, "output_failed", "the Artifact could not be written to the output file")
+		}
+		if format == OutputJSON {
+			return a.writeJSON(map[string]any{"artifactId": positionals[0], "output": flags["output"], "sizeBytes": len(content)})
+		}
+		fmt.Fprintf(a.stdout, "wrote %d bytes to %s\n", len(content), flags["output"])
 		return ExitSuccess
 	default:
 		return a.runUsage(format, fmt.Errorf("unknown run command %q", args[0]))

@@ -35,7 +35,8 @@
                         "hermes",
                         "codex-cli",
                         "claude-code",
-                        "generic-cli"
+                        "generic-cli",
+                        "blazn-agent"
                     ]
                 },
                 "publisher": {
@@ -147,7 +148,8 @@
                                 "blazn-hermes-adapter",
                                 "blazn-codex-adapter",
                                 "blazn-claude-adapter",
-                                "blazn-generic-adapter"
+                                "blazn-generic-adapter",
+                                "blazn-agent-adapter"
                             ]
                         },
                         "path": {
