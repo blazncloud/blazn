@@ -154,5 +154,10 @@ and only then unhold and refresh the snap on `ben1`.
   shared control plane (`/var/snap/microk8s/current/args/kube-apiserver` on
   the control-plane host, then an API server restart) and needs its own
   review and a maintenance window.
+  It also needs a product change first: `NodeRestriction` forbids a kubelet
+  from changing its own Node's taints, and the node agent removes the
+  `blazn.dev/bootstrap` taint and adds `blazn.dev/retired` with the kubelet
+  credential. Those changes must move to the issuer before the plugin is
+  enabled, or node activation and uninstall will fail.
 - Sandboxes use the default container runtime. A hardened RuntimeClass is
   required before running untrusted code for other tenants.
