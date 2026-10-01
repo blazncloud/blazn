@@ -20,6 +20,7 @@ resources:
 - networkpolicy-api-data-egress-dev.yaml
 - networkpolicy-api-dev-email-capture-egress.yaml
 - networkpolicy-api-dev-email-egress.yaml
+- networkpolicy-api-dev-model-egress.yaml
 - networkpolicy-api-dev-node-broker-egress.yaml
 - networkpolicy-api-dev-sandbox-access-egress.yaml
 - networkpolicy-api-from-edge-dev.yaml

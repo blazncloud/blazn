@@ -46,6 +46,22 @@ Kubernetes Secrets created by hand are listed, by name and key only, in
 - `api-dev-agent-run`: the Agent Run controller's database URL
   (`database-url`) and its model routes (`model-routes.json`). A route with a
   credential names a file; add that file as another key of this Secret.
+  `homeai-glm-key` is the bearer key of the GLM route below.
+
+Model routes in `model-routes.json`:
+
+| Route | Kind | Endpoint | State |
+|---|---|---|---|
+| `0a000000-0000-4000-8000-000000000001` v1 | `stub` | none | Used by qualification |
+| `d78d9056-49d7-49a4-b09c-1a73ae764bb2` v1 | `openai-chat`, `glm-5.3-flash` | `http://192.168.0.117:8000/v1` (Spark 1), allowed by NetworkPolicy `api-dev-model-egress` | Staged 2026-10-01, **not yet proven**: the Spark was off the network, so the model name and the key have not been checked against the live server |
+
+The controller reads the routes file at startup, so a change needs a restart
+of `api-dev`; its log line `"type":"started"` reports the number of routes. To
+use the GLM route once the Spark answers, register an Agent for it with
+`blazn agent quickstart --route d78d9056-49d7-49a4-b09c-1a73ae764bb2 --route-version 1`
+and run `infra/qualification/agent-run.py`. The public name
+`homeai.benpelo.com` is not used: it is an ngrok tunnel on changing addresses,
+which the egress policy cannot name.
 
 The Agent Run controller's database role is created by the migrations without
 a login. On the hosted database it was given `LOGIN`, a password, and
