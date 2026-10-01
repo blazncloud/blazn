@@ -26,13 +26,12 @@ while [ "$#" -gt 0 ]; do
     --migrate) migrate=true ;;
     --no-rollout) rollout=false ;;
     --deployment) shift; deployment=${1:?--deployment needs a name} ;;
-    *) printf 'usage: %s [--migrate] [--no-rollout] [--deployment api-dev|api]\n' "$0" >&2; exit 64 ;;
+    *) printf 'usage: %s [--migrate] [--no-rollout] [--deployment api-dev]\n' "$0" >&2; exit 64 ;;
   esac
   shift
 done
 case "$deployment" in
   api-dev) health=https://api.blazn.frontro.com/healthz ;;
-  api) health=https://blazn-test.frontro.com/healthz ;;
   *) printf 'unknown deployment: %s\n' "$deployment" >&2; exit 64 ;;
 esac
 
