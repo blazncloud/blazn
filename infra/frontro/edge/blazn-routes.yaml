@@ -1,6 +1,10 @@
 # Reference only: the blazn-* entries of ConfigMap moments-direct/moments-direct-gateway (dynamic.yml).
 # That gateway is shared Frontro infrastructure; change it there, then re-export.
 http:
+  middlewares:
+    sparks-key:
+      forwardAuth:
+        address: http://sparks-auth.sparks-edge.svc.cluster.local:8080/
   routers:
     blazn-dev-api:
       entryPoints:
@@ -20,8 +24,28 @@ http:
       - https
       rule: Host(`api.blazn.frontro.com`)
       service: noop@internal
+    sparks-api:
+      entryPoints:
+      - websecure
+      middlewares:
+      - sparks-key
+      rule: Host(`sparks.frontro.com`) && ((Method(`GET`) && Path(`/v1/models`)) || (Method(`POST`) && (Path(`/v1/chat/completions`) || Path(`/v1/completions`))))
+      service: sparks-api
+      tls:
+        certResolver: blazntest
+    sparks-http:
+      entryPoints:
+      - web
+      middlewares:
+      - https
+      rule: Host(`sparks.frontro.com`)
+      service: noop@internal
   services:
     blazn-dev-api:
       loadBalancer:
         servers:
         - url: http://api-dev.blazn-test.svc.cluster.local:8080
+    sparks-api:
+      loadBalancer:
+        servers:
+        - url: http://192.168.0.117:8000
