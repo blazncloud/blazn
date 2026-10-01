@@ -157,6 +157,9 @@ blazn run cancel RUN_ID --expected-version N --request-id cancel-$(date +%s)
 The first reply takes a few minutes while the sandbox starts. A Run finishes
 after five idle minutes, and its sandbox is stopped.
 
+**Status:** this conversation passed live on 2026-10-01 on a registered node
+(13 of 13 checks; plan items M6.1, M6.2, M6.5).
+
 The model is chosen by the model route. The development environment has one
 route today, `0a000000-0000-4000-8000-000000000001`: a stand-in model that runs
 one command in the sandbox and reports its output. It proves the whole path
