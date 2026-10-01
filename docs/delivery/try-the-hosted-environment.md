@@ -150,7 +150,7 @@ blazn run watch RUN_ID             # tool calls and model calls as they happen
 blazn run send RUN_ID --kind followup --content "Make it shorter" --request-id msg-$(date +%s)
 
 blazn run artifacts RUN_ID         # after the Run has finished: patch and summary
-blazn run download ARTIFACT_ID --output change.patch
+blazn run download ARTIFACT_ID change.patch
 blazn run cancel RUN_ID --expected-version N --request-id cancel-$(date +%s)
 ```
 

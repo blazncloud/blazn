@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -189,5 +191,38 @@ func TestRunLifecycleCommands(t *testing.T) {
 	app, stdout, stderr = runCommandApp(fake)
 	if code := app.Run([]string{"run", "watch", cliRunID, "--interval-seconds", "1"}); code != ExitSuccess || stderr.Len() != 0 || !strings.Contains(stdout.String(), "run.queued") || !strings.Contains(stdout.String(), "run.succeeded") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunDownloadWritesTheArtifactAndKeepsTheGlobalOutputFlag(t *testing.T) {
+	fake := &fakeRunCommands{}
+	file := filepath.Join(t.TempDir(), "change.patch")
+	app, stdout, stderr := runCommandApp(fake)
+	if code := app.Run([]string{"--output", "json", "run", "download", "00000000-0000-4000-8000-000000000007", file}); code != ExitSuccess || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"sizeBytes":14`) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if content, err := os.ReadFile(file); err != nil || string(content) != "artifact bytes" || fake.runID != "00000000-0000-4000-8000-000000000007" {
+		t.Fatalf("content=%q err=%v fake=%#v", content, err, fake)
+	}
+	app, _, _ = runCommandApp(fake)
+	if code := app.Run([]string{"run", "download", "00000000-0000-4000-8000-000000000007"}); code != ExitUsage {
+		t.Fatalf("a download without FILE must be a usage error, code=%d", code)
+	}
+}
+
+func TestRunCreateForAnAgentFillsTheRunDefaults(t *testing.T) {
+	fake := &fakeRunCommands{}
+	app, stdout, stderr := runCommandApp(fake)
+	if code := app.Run([]string{"run", "create", "--agent-version", "00000000-0000-4000-8000-00000000000a", "--harness-profile", "00000000-0000-4000-8000-00000000000b", "--expires", "1800", "--request-id", "agent-run-1"}); code != ExitSuccess || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	request := fake.createRequest
+	if request.Agent == nil || request.Agent.ExpiresInSeconds != 1800 || request.Kind != "agent.execute" || request.ProofClass != client.ProofClassSandbox ||
+		strings.Join(request.OutputNames, ",") != "patch,summary" || !strings.HasPrefix(request.PlanDigest, "sha256:") {
+		t.Fatalf("request=%#v", request)
+	}
+	app, _, _ = runCommandApp(fake)
+	if code := app.Run([]string{"run", "create", "--agent-version", "00000000-0000-4000-8000-00000000000a", "--request-id", "agent-run-2"}); code != ExitUsage {
+		t.Fatalf("an Agent Run without a Harness Profile must be a usage error, code=%d", code)
 	}
 }
