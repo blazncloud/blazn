@@ -70,6 +70,21 @@ export interface WorkerCredentialIssuer {
     request: WorkerAssignmentRequest,
     signal: AbortSignal,
   ): Promise<{ assigned: boolean }>;
+  hold?(
+    request: WorkerPlacementHoldRequest,
+    signal: AbortSignal,
+  ): Promise<{ changed: boolean }>;
+}
+
+// Placement holds keep new sandboxes off a Blazn node that is not active.
+// An empty reason releases the hold.
+export type PlacementHoldReason = "" | "paused" | "quarantined" | "draining" | "offline";
+
+export interface WorkerPlacementHoldRequest {
+  clusterId: string;
+  expectedNodeName: string;
+  nodeUid: string;
+  holdReason: PlacementHoldReason;
 }
 
 export interface WorkerAssignmentRequest {

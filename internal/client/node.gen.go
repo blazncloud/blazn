@@ -1,8 +1,8 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: c06c4a9e64dee67521cb7a501c83ac3afc672ad660451e586fa308ca61387f42
+// OpenAPI SHA256: 348c97c4c28321126400eb9e8e526b32392c35ec4376fab9bde681873acdfe29
 // NodeInstallPlan SHA256: e8cbc6566ae144e020338d173cea6c28c1cca616306cccdc3c2ffa69045bf123
 // NodeInstallReceipt SHA256: 311cee0270fd2051db8fef7b8f2a513277b602be2d03241613c3a9a9dd1b0551
-// NodeOperationReceipt SHA256: 2046d961f3af261e38e5e81e66275e88e53b98077167e7f86fe59f045cb004c8
+// NodeOperationReceipt SHA256: 57c8b4fe4f633f9e4d8ba5c14ec1039f667941b7e4936b7d5f7b6def0c907a67
 
 package client
 
@@ -685,7 +685,7 @@ func ValidateCreateNodeOperationRequest(request CreateNodeOperationRequest) erro
 		return fmt.Errorf("node operation request is invalid")
 	}
 	switch request.Type {
-	case "pause", "resume", "rotate_identity", "repair":
+	case "pause", "resume", "quarantine", "rotate_identity", "repair":
 		var parameters struct{}
 		if err := decodeClosedNodeObject(request.Parameters, &parameters); err != nil {
 			return fmt.Errorf("%s parameters: %w", request.Type, err)
@@ -1109,6 +1109,18 @@ func ValidateNodeOperationReceipt(receipt NodeOperationReceipt) error {
 	if receipt.SignerKind == "node_identity" {
 		if receipt.IdentityGeneration == nil || *receipt.IdentityGeneration < 1 {
 			return fmt.Errorf("node-identity receipt generation is invalid")
+		}
+	} else if oneOf(string(receipt.OperationType), "pause", "resume", "quarantine") {
+		// The control plane itself performs these: it changes the node's
+		// lifecycle state and placement hold. It may report their success, but
+		// never a host action.
+		if receipt.IdentityGeneration != nil {
+			return fmt.Errorf("control-plane receipt identity is invalid")
+		}
+		for _, action := range receipt.Actions {
+			if action.Kind != "api" {
+				return fmt.Errorf("control-plane receipt claims a host action")
+			}
 		}
 	} else {
 		if receipt.IdentityGeneration != nil || !oneOf(receipt.Outcome, "failed", "cancelled", "recovery_required") {
@@ -2297,7 +2309,7 @@ func validArchitecture(value NodeArchitecture) bool {
 }
 
 func validNodeOperationType(value NodeOperationType) bool {
-	return oneOf(string(value), "pause", "resume", "label", "cordon", "uncordon", "rotate_identity", "repair", "update", "drain", "remove")
+	return oneOf(string(value), "pause", "resume", "quarantine", "label", "cordon", "uncordon", "rotate_identity", "repair", "update", "drain", "remove")
 }
 
 func ValidateNodeEnrollmentSecret(secret NodeEnrollmentSecret) error {

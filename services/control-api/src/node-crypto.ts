@@ -69,6 +69,7 @@ export interface NodePlanSigner {
   publicKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }>;
   sign(unsignedPlan: Record<string, unknown>): Promise<Record<string, unknown>>;
   signActivationGrant(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>>;
+  signOperationReceipt?(unsignedReceipt: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 export class FileNodePlanSigner implements NodePlanSigner {
@@ -95,6 +96,17 @@ export class FileNodePlanSigner implements NodePlanSigner {
     const digest = `sha256:${sha256Hex(canonicalJson(normalized))}`;
     const key = await readEd25519PrivateKey(this.privateKeyFile);
     const signature = sign(null, Buffer.from(`blazn-node-capacity-activation-grant-v1\n${digest}`, "utf8"), key).toString("base64url");
+    return { ...normalized, digest, signature };
+  }
+  // signOperationReceipt signs a control-plane operation receipt. The digest
+  // covers every field except digest and signature, as the node client
+  // verifies it, and the signature is domain-separated from plans and grants.
+  async signOperationReceipt(unsignedReceipt: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const normalized: Record<string, unknown> = { ...unsignedReceipt, signingKeyId: this.keyId };
+    delete normalized.digest; delete normalized.signature;
+    const digest = `sha256:${sha256Hex(canonicalJson(normalized))}`;
+    const key = await readEd25519PrivateKey(this.privateKeyFile);
+    const signature = sign(null, Buffer.from(`blazn-node-operation-receipt-v1\n${digest}`, "utf8"), key).toString("base64url");
     return { ...normalized, digest, signature };
   }
 }

@@ -10,7 +10,7 @@
     "operationId": {"type": "string", "format": "uuid"},
     "nodeId": {"type": "string", "format": "uuid"},
     "workspaceId": {"type": "string", "format": "uuid"},
-    "operationType": {"enum": ["pause", "resume", "label", "cordon", "uncordon", "rotate_identity", "repair", "update", "drain", "remove"]},
+    "operationType": {"enum": ["pause", "resume", "quarantine", "label", "cordon", "uncordon", "rotate_identity", "repair", "update", "drain", "remove"]},
     "expectedNodeVersion": {"type": "integer", "minimum": 1},
     "startedAt": {"type": "string", "format": "date-time"},
     "completedAt": {"type": "string", "format": "date-time"},
@@ -28,7 +28,9 @@
   },
   "allOf": [
     {"if": {"properties": {"signerKind": {"const": "node_identity"}}, "required": ["signerKind"]}, "then": {"properties": {"identityGeneration": {"type": "integer", "minimum": 1}}}},
-    {"if": {"properties": {"signerKind": {"const": "control_plane"}}, "required": ["signerKind"]}, "then": {"properties": {"identityGeneration": {"type": "null"}, "outcome": {"enum": ["failed", "cancelled", "recovery_required"]}, "actions": {"items": {"properties": {"outcome": {"enum": ["skipped", "failed", "residue"]}}}}}}},
+    {"if": {"properties": {"signerKind": {"const": "control_plane"}}, "required": ["signerKind"]}, "then": {"properties": {"identityGeneration": {"type": "null"}}}},
+    {"if": {"properties": {"signerKind": {"const": "control_plane"}, "operationType": {"not": {"enum": ["pause", "resume", "quarantine"]}}}, "required": ["signerKind", "operationType"]}, "then": {"properties": {"outcome": {"enum": ["failed", "cancelled", "recovery_required"]}, "actions": {"items": {"properties": {"outcome": {"enum": ["skipped", "failed", "residue"]}}}}}}},
+    {"if": {"properties": {"signerKind": {"const": "control_plane"}, "operationType": {"enum": ["pause", "resume", "quarantine"]}}, "required": ["signerKind", "operationType"]}, "then": {"properties": {"actions": {"items": {"properties": {"kind": {"const": "api"}}}}}}},
     {"if": {"properties": {"outcome": {"const": "succeeded"}}, "required": ["outcome"]}, "then": {"properties": {"residues": {"maxItems": 0}, "actions": {"items": {"properties": {"outcome": {"enum": ["applied", "skipped", "restored"]}}}}}}},
     {"if": {"properties": {"outcome": {"enum": ["partial", "recovery_required"]}}, "required": ["outcome"]}, "then": {"properties": {"residues": {"minItems": 1}}}}
   ]

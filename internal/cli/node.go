@@ -24,6 +24,7 @@ type nodeCommands interface {
 	Enroll(context.Context, NodeEnrollOptions) (nodepkg.EnrollResult, error)
 	List(context.Context, string) (client.NodeList, error)
 	Get(context.Context, string) (client.Node, error)
+	Operate(context.Context, string, client.NodeOperationType, string) (client.NodeOperation, error)
 	Recover(context.Context) (client.NodeInstallReceipt, error)
 	Repair(context.Context) (client.NodeInstallReceipt, error)
 	Uninstall(context.Context, bool) (client.NodeInstallReceipt, error)
@@ -138,6 +139,20 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 			return a.writeJSON(result)
 		}
 		fmt.Fprintf(a.stdout, "Node %s (%s) [%s, trust=%s, eligible=%t, capability=%s]\n", result.ID, result.Name, result.LifecycleState, result.TrustState, result.AgentEligible, capabilityVersion(result.CapabilityVersion))
+		return ExitSuccess
+	case "pause", "quarantine", "resume":
+		pos, flags, err := positionalAndFlags(args[1:], 1, map[string]bool{"request-id": true})
+		if err != nil || len(pos) != 1 || !nodeUUIDPatternCLI.MatchString(pos[0]) || !validRequestID(flags["request-id"]) {
+			return a.nodeUsage(format, fmt.Errorf("node %s requires NODE --request-id ID", args[0]))
+		}
+		result, err := commands.Operate(ctx, pos[0], client.NodeOperationType(args[0]), flags["request-id"])
+		if err != nil {
+			return a.writeError(format, ExitFailure, "node_failed", err.Error())
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		fmt.Fprintf(a.stdout, "Node %s %s: %s\n", pos[0], args[0], result.Status)
 		return ExitSuccess
 	case "enroll":
 		pos, flags, err := positionalAndFlags(args[1:], 0, map[string]bool{"workspace": true, "request-id": true, "name": true, "mode": true, "machine-fingerprint": true, "profile": true, "cluster-id": true, "node-name": true, "node-uid": true, "resource-version": true})

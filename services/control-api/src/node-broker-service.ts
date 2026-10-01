@@ -20,6 +20,7 @@ import type {
   IssuedWorkerCredential,
   JoinCredentialRequest,
   JoinCredentialResponse,
+  PlacementHoldReason,
   StoredJoinIssuance,
   WorkerCredentialIssuer,
 } from "./node-broker-types.js";
@@ -76,6 +77,18 @@ export class NodeBrokerService {
     const result = await this.providerCall((signal) => this.issuer.assign!({ clusterId: input.clusterId, expectedNodeName: input.nodeName, nodeUid: input.nodeUid, workspaceId: input.workspaceId }, signal));
     return result.assigned;
   }
+  // holdNode sets or releases the placement hold on an activated worker's
+  // Node. The issuer touches only a Blazn worker with the bound UID.
+  async holdNode(input: { clusterId: string; nodeName: string; nodeUid: string; holdReason: string }): Promise<boolean> {
+    if (!input.clusterId || input.clusterId.length > 128 || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(input.nodeName) || !UUID.test(input.nodeUid) ||
+        !["", "paused", "quarantined", "draining", "offline"].includes(input.holdReason)) {
+      invalid("worker placement hold is invalid");
+    }
+    if (!this.issuer.hold) throw new Error("worker placement holder is unavailable");
+    const result = await this.providerCall((signal) => this.issuer.hold!({ clusterId: input.clusterId, expectedNodeName: input.nodeName, nodeUid: input.nodeUid, holdReason: input.holdReason as PlacementHoldReason }, signal));
+    return result.changed;
+  }
+
 
   async issue(
     idempotencyKey: string,

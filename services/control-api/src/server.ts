@@ -592,12 +592,14 @@ server.requestTimeout = 15_000;
 server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 100;
 server.listen(config.port, config.bindAddress, () => console.info("control-api listening", { port: config.port, bindAddress: config.bindAddress }));
+nodeRouter.startPlacementReconciler();
 
 let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   for (const sessionId of activeStreams.keys()) closeStream(sessionId);
+  nodeRouter.stopPlacementReconciler();
   const closed = new Promise<void>((resolve) => server.close(() => resolve()));
   const deadline = setTimeout(() => server.closeAllConnections(), 10_000);
   await closed;

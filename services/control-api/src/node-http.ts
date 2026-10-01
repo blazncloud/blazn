@@ -23,6 +23,29 @@ export class NodeHttpRouter {
       catch(error){if(attempt===3){process.stderr.write(`control-api node workspace assignment failed nodeId=${node.id} reason=${JSON.stringify(error instanceof Error?error.message.slice(0,200):"unknown")}\n`);return;}await new Promise(resolve=>setTimeout(resolve,1_000*attempt));}
     }
   }
+  // reconcilePlacement brings each bound node's placement-hold taint in line
+  // with its state: a paused, quarantined, draining or offline node is held,
+  // so no new sandbox is scheduled on it, and an active node is released.
+  // It is idempotent; failures are retried on the next pass.
+  async reconcilePlacement(nodeId?:string):Promise<void>{
+    if(!this.broker?.hold)return;
+    for(const drift of await this.service.placementDrift(50,nodeId)){
+      try{
+        await this.broker.hold({clusterId:drift.clusterId,nodeName:drift.nodeName,nodeUid:drift.nodeUid,holdReason:drift.desired??""},AbortSignal.timeout(15_000));
+        await this.service.recordPlacementHold({nodeId:drift.nodeId,workspaceId:drift.workspaceId,prior:drift.applied,applied:drift.desired});
+      }catch(error){process.stderr.write(`control-api node placement hold failed nodeId=${drift.nodeId} hold=${drift.desired??"none"} reason=${JSON.stringify(error instanceof Error?error.message.slice(0,200):"unknown")}\n`);}
+    }
+  }
+
+  private placementTimer?:NodeJS.Timeout|undefined;
+  startPlacementReconciler(intervalMs=30_000):void{
+    if(!this.broker?.hold||this.placementTimer)return;
+    let running=false;
+    this.placementTimer=setInterval(()=>{if(running)return;running=true;this.reconcilePlacement().catch(error=>process.stderr.write(`control-api node placement reconcile failed reason=${JSON.stringify(error instanceof Error?error.message.slice(0,200):"unknown")}\n`)).finally(()=>{running=false;});},intervalMs);
+    this.placementTimer.unref();
+  }
+  stopPlacementReconciler():void{if(this.placementTimer)clearInterval(this.placementTimer);this.placementTimer=undefined;}
+
 
   private async removeRetiredWorker(node:NodeView):Promise<void>{
     const binding=node.kubernetesBinding;if(!binding||!this.broker?.retire)return;
@@ -51,7 +74,7 @@ export class NodeHttpRouter {
     const consume=path.match(/^\/v1\/node-service\/join-credentials\/([^/]+)\/consume$/);
     if(consume){if(request.method!=="POST")throw method();const key=idempotency(request);const body=await jsonBody(request);exact(body,["nodeId","enrollmentId","planId","joinedNodeUid","joinedNodeName","resourceVersion","clusterId"]);const issuanceId=uuid(consume[1]!,"issuanceId"),input={nodeId:uuid(string(body.nodeId,"nodeId",64),"nodeId"),enrollmentId:uuid(string(body.enrollmentId,"enrollmentId",64),"enrollmentId"),planId:uuid(string(body.planId,"planId",64),"planId"),joinedNodeUid:string(body.joinedNodeUid,"joinedNodeUid",128),joinedNodeName:string(body.joinedNodeName,"joinedNodeName",253),resourceVersion:string(body.resourceVersion,"resourceVersion",128),clusterId:string(body.clusterId,"clusterId",128)},nodeProof=proof(request);const replay=await this.service.replayConsumedJoin(issuanceId,key,input,nodeProof);if(replay)return sendJson(response,200,replay);if(!this.broker?.observe)throw new NodeHttpError("node_broker_unavailable","Node broker join observation is unavailable");try{await this.broker.observe(issuanceId,{clusterId:input.clusterId,nodeName:input.joinedNodeName,nodeUid:input.joinedNodeUid,resourceVersion:input.resourceVersion},AbortSignal.timeout(25_000));}catch{throw new NodeHttpError("node_broker_unavailable","Joined worker observation failed");}const result=await this.service.consumeJoin(issuanceId,key,input,nodeProof);return sendJson(response,200,result);}
     const operations=path.match(/^\/v1\/nodes\/([^/]+)\/operations$/);
-    if(operations){if(request.method!=="POST")throw method();const body=await jsonBody(request);exact(body,["type","expectedVersion","parameters"]);const result=await this.service.createOperation(await authenticate(),uuid(operations[1]!,"nodeId"),idempotency(request),{type:one(body.type,"type",["pause","resume","label","cordon","uncordon","rotate_identity","repair","update","drain","remove"]) as NodeOperationType,expectedVersion:integer(body.expectedVersion,"expectedVersion",1),parameters:object(body.parameters,"parameters")});return sendJson(response,202,result);}
+    if(operations){if(request.method!=="POST")throw method();const body=await jsonBody(request);exact(body,["type","expectedVersion","parameters"]);const result=await this.service.createOperation(await authenticate(),uuid(operations[1]!,"nodeId"),idempotency(request),{type:one(body.type,"type",["pause","resume","quarantine","label","cordon","uncordon","rotate_identity","repair","update","drain","remove"]) as NodeOperationType,expectedVersion:integer(body.expectedVersion,"expectedVersion",1),parameters:object(body.parameters,"parameters")});if(["pause","resume","quarantine"].includes(result.type))await this.reconcilePlacement(result.nodeId).catch(()=>{});return sendJson(response,202,result);}
     const events=path.match(/^\/v1\/nodes\/([^/]+)\/events$/);
     if(events){if(request.method!=="GET")throw method();return this.stream(request,response,uuid(events[1]!,"nodeId"),authenticate);}
     const node=path.match(/^\/v1\/nodes\/([^/]+)$/);

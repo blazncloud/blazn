@@ -192,7 +192,6 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-16), [
-    "027_controller_role_public_grants.sql",
     "028_development_candidate_image_binding.sql",
     "029_public_function_hardening_boundary.sql",
     "030_run_messages.sql",
@@ -208,6 +207,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "040_agent_run_execution.sql",
     "041_agent_node_registry_placement.sql",
     "042_sandbox_delete_after_failed_create.sql",
+    "043_node_placement_hold.sql",
   ]);
 });
 
@@ -230,6 +230,15 @@ test("delete after a failed create accepts only a destroyed-backend receipt",asy
   assert.match(sql,/NOT EXISTS\(SELECT 1 FROM public\.sandbox_workload_admissions a WHERE a\.sandbox_id=target\.sandbox_id\)/);
   assert.match(sql,/'prior_cleanup_unverified'/);
   assert.match(sql,/REVOKE ALL ON FUNCTION sandbox_controller_finalize_stopped_delete_v1\(uuid,text,uuid\)\s+FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller;/);
+  assert.doesNotMatch(sql,/GRANT /);
+});
+
+test("node placement holds add quarantine and record the applied hold",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/043_node_placement_hold.sql"),"utf8");
+  assert.match(sql,/node_operations_type_check[\s\S]*'pause', 'resume', 'quarantine', 'label'/);
+  assert.match(sql,/node_operation_receipts_operation_type_check[\s\S]*'pause', 'resume', 'quarantine', 'label'/);
+  assert.match(sql,/ADD COLUMN placement_hold text\s+CHECK \(placement_hold IN \('paused', 'quarantined', 'draining', 'offline'\)\)/);
   assert.doesNotMatch(sql,/GRANT /);
 });
 

@@ -31,6 +31,19 @@ type Request struct {
 	ProviderHandle   string `json:"providerHandle,omitempty"`
 	NodeUID          string `json:"nodeUid,omitempty"`
 	WorkspaceID      string `json:"workspaceId,omitempty"`
+	HoldReason       string `json:"holdReason,omitempty"`
+}
+
+// HoldResponse reports the placement hold now on a Blazn worker's Node; an
+// empty reason means no hold. Changed is false when it already matched.
+type HoldResponse struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Operation     string `json:"operation"`
+	ClusterID     string `json:"clusterId"`
+	NodeName      string `json:"nodeName"`
+	NodeUID       string `json:"nodeUid"`
+	HoldReason    string `json:"holdReason"`
+	Changed       bool   `json:"changed"`
 }
 
 // AssignResponse reports that a Blazn worker's Node is bound to the workspace
@@ -137,6 +150,13 @@ func DecodeRequest(data []byte) (Request, error) {
 		}
 		if len(req.ClusterID) < 1 || len(req.ClusterID) > 128 || !namePattern.MatchString(req.ExpectedNodeName) || !uuidPattern.MatchString(req.NodeUID) || !uuidPattern.MatchString(req.WorkspaceID) {
 			return Request{}, invalid("assign binding is invalid")
+		}
+	case "hold":
+		for _, key := range []string{"clusterId", "expectedNodeName", "nodeUid", "holdReason"} {
+			allowed[key] = true
+		}
+		if len(req.ClusterID) < 1 || len(req.ClusterID) > 128 || !namePattern.MatchString(req.ExpectedNodeName) || !uuidPattern.MatchString(req.NodeUID) || req.HoldReason != "" && !PlacementHoldReasons[req.HoldReason] {
+			return Request{}, invalid("hold binding is invalid")
 		}
 	case "revoke":
 		allowed["providerHandle"] = true

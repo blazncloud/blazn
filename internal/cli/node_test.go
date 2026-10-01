@@ -17,6 +17,12 @@ type fakeNodeCommands struct {
 	heartbeats       int
 	repairs          int
 	uninstallManaged bool
+	operations       []string
+}
+
+func (f *fakeNodeCommands) Operate(_ context.Context, nodeID string, operation client.NodeOperationType, requestID string) (client.NodeOperation, error) {
+	f.operations = append(f.operations, nodeID+"/"+string(operation)+"/"+requestID)
+	return client.NodeOperation{ID: "40000000-0000-4000-8000-000000000001", NodeID: nodeID, Type: operation, Status: "succeeded"}, nil
 }
 
 func (*fakeNodeCommands) List(context.Context, string) (client.NodeList, error) {
@@ -78,7 +84,7 @@ func TestNodeHelpAndHeartbeat(t *testing.T) {
 	fake := &fakeNodeCommands{}
 	app := New(&stdout, &stderr, BuildInfo{})
 	app.node = func(bool) (nodeCommands, error) { return fake, nil }
-	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node install|list|get|capacity|enroll|recover|repair|uninstall|heartbeat|serve") || !strings.Contains(stdout.String(), "root-authorize") {
+	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node install|list|get|capacity|pause|quarantine|resume|enroll|recover|repair|uninstall|heartbeat|serve") || !strings.Contains(stdout.String(), "root-authorize") {
 		t.Fatalf("help=%q code=%d", stdout.String(), code)
 	}
 	stdout.Reset()
@@ -179,5 +185,31 @@ func TestNewAppWiresDefaultNodeCommandFactory(t *testing.T) {
 	app := New(&stdout, &stderr, BuildInfo{Version: "v-test"})
 	if code := app.Run([]string{"node", "heartbeat"}); code != ExitSuccess || !called || fake.heartbeats != 1 {
 		t.Fatalf("code=%d called=%v heartbeats=%d stderr=%s", code, called, fake.heartbeats, stderr.String())
+	}
+}
+
+func TestNodePlacementOperationsRequireANodeAndRequestID(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeNodeCommands{}
+	app := New(&stdout, &stderr, BuildInfo{})
+	app.node = func(bool) (nodeCommands, error) { return fake, nil }
+	const node = "30000000-0000-4000-8000-000000000001"
+	for _, operation := range []string{"pause", "quarantine", "resume"} {
+		stdout.Reset()
+		if code := app.Run([]string{"node", operation, node, "--request-id", "request-" + operation}); code != ExitSuccess || !strings.Contains(stdout.String(), "succeeded") {
+			t.Fatalf("%s code=%d stdout=%q stderr=%q", operation, code, stdout.String(), stderr.String())
+		}
+	}
+	want := []string{node + "/pause/request-pause", node + "/quarantine/request-quarantine", node + "/resume/request-resume"}
+	if strings.Join(fake.operations, ",") != strings.Join(want, ",") {
+		t.Fatalf("operations=%v", fake.operations)
+	}
+	for _, bad := range [][]string{{"node", "pause", node}, {"node", "pause", "not-a-node", "--request-id", "request-1"}, {"node", "resume", "--request-id", "request-1"}} {
+		if code := app.Run(bad); code != ExitUsage {
+			t.Fatalf("%v code=%d", bad, code)
+		}
+	}
+	if len(fake.operations) != 3 {
+		t.Fatalf("a rejected command reached the API: %v", fake.operations)
 	}
 }

@@ -26,12 +26,18 @@ type fakeBackend struct {
 	failObserve           bool
 	retired               []string
 	assigned              []string
+	held                  []string
 	retireDeleted         bool
 	retireErr             error
 }
 
 func (f *fakeBackend) Assign(_ context.Context, name, uid, workspaceID string) (bool, error) {
 	f.assigned = append(f.assigned, name+"/"+uid+"/"+workspaceID)
+	return true, nil
+}
+
+func (f *fakeBackend) Hold(_ context.Context, name, uid, reason string) (bool, error) {
+	f.held = append(f.held, name+"/"+uid+"/"+reason)
 	return true, nil
 }
 
