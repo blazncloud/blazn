@@ -222,6 +222,7 @@ the same Traefik image and listing `/api/http/routers`.
   shared control plane (`/var/snap/microk8s/current/args/kube-apiserver` on
   the control-plane host, then an API server restart) and needs its own
   review and a maintenance window.
+  The design is in [`docs/node-restriction-design.md`](../node-restriction-design.md).
   It also needs a product change first: `NodeRestriction` forbids a kubelet
   from changing its own Node's taints, and the node agent removes the
   `blazn.dev/bootstrap` taint and adds `blazn.dev/retired` with the kubelet
