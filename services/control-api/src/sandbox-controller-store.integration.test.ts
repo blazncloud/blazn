@@ -280,8 +280,9 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
         expectedBackendUid: null, expectedBackendResourceVersion: null, expectedWorkloadDigest: null, expectedObservationDigest: null,
         cleanupComplete: destroyed, artifactExportComplete: false, grantsRevoked: destroyed, backendDestroyed: destroyed,
         artifactIds: [], warningCodes: [], error: { code: "backend_failure", message: "Pod was never scheduled", requestId: randomUUID() } }), true);
-      await admin.query("UPDATE sandboxes SET state='deleting',desired_state='deleted',version=version+1 WHERE id=$1", [sandboxId]);
+      // As the API does: the delete expects the version it read, then bumps it.
       const deleteId = await insertOperation(admin, workspaceId, sandboxId, userId, "delete");
+      await admin.query("UPDATE sandboxes SET state='deleting',desired_state='deleted',version=version+1 WHERE id=$1", [sandboxId]);
       assert.equal(await first.claim(`${worker}-delete`, 30), undefined);
       const outcome = await admin.query(`SELECT s.state,r.status,r.error->>'code' AS code,r.result
         FROM sandboxes s JOIN sandbox_operations o ON o.sandbox_id=s.id
