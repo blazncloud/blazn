@@ -170,7 +170,7 @@ make test-install
 - [Product overview](docs/product-overview.md) — vision, surfaces, system model, and product principles
 - [Milestone 1](docs/milestone-1.md) — CLI distribution and release trust
 - [Milestone 2A contract](docs/milestone-2a-contract.md) — workspace and membership semantics
-- [Authentication](docs/authentication.md) — self-hosted ZITADEL, branded sign-in, MFA, and device approval
+- [Authentication](docs/authentication.md) — passwordless email-code sign-in and device approval
 - [Node contract](docs/node-contract.md) — enrollment, installation, receipts, and lifecycle
 - [Proxy contract](docs/proxy-contract.md) — compatible request routing and activation policy
 - [Brand assets](docs/assets/README.md) — flame mark and palette

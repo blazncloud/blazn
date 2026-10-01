@@ -10,7 +10,6 @@ No secret values appear here or in the repository: only names and locations.
 |---|---|---|
 | Control API (`api-dev`) | namespace `blazn-test`, pinned to `ben5` | Serves `https://api.blazn.frontro.com`. Pod has the API, an OpenBao agent (init and renewal), and an nginx sidecar on 8081 that adds the trusted-proxy header. |
 | Agent Run controller | container `agent-run-controller` in the `api-dev` pod | Executes queued Agent Runs: starts the harness in the Run's Sandbox, relays messages, calls the model. Same image as the API. See [`docs/agent-run-controller.md`](../agent-run-controller.md). |
-| Control API (`api`) | same namespace | The earlier test deployment at `https://blazn-test.frontro.com`. Not used by the CLI. |
 | Database | `frontro-db-1` (192.168.0.105), Postgres 17, database `blazn_test` | Roles: `blazn_runtime` (API), `blazn_migration` (migrations), `blazn_node_broker` (broker), `blazn_agent_run_controller` (Agent Run controller), plus the sandbox controller's role. TLS with `verify-full`. |
 | Object store | `objectstore` (MinIO) in `blazn-test`, PVC `storage-data` | Bucket `blazn-test`. Used by the API and the sandbox controller. |
 | Image registry | `registry` in `blazn-test`, PVC `registry-data` | `registry.blazn-test.internal`; holds the control API image. |
@@ -19,7 +18,7 @@ No secret values appear here or in the repository: only names and locations.
 | Worker issuer | `ben1`, systemd `blazn-microk8s-worker-issuer` | Root-owned; issues MicroK8s worker join credentials over `/run/blazn/microk8s-worker-issuer.sock`. |
 | Node broker | `ben1`, Docker container `blazn-node-broker` | Listens on `192.168.0.100:18081`. The API reaches it through NetworkPolicy `api-dev-node-broker-egress` and `BLAZN_NODE_BROKER_URL`. |
 | Sandbox controller | namespace `blazn-poc-system` | Installed and upgraded by the journaled tooling in `infra/agent-sandbox`; sandboxes run in `blazn-poc-sandboxes`. |
-| Identity stack | namespace `blazn-identity-dev` | ZITADEL is deployed but unused: the API reports `"identityProvider":"disabled"`. Only `identity-mail` is in use. |
+| Mail capture | `identity-mail` (Mailpit) in namespace `blazn-identity-dev` | Receives sign-in codes for the reserved capture domain so qualification can sign in. Nothing else runs in that namespace. |
 
 Blazn nodes join the Frontro MicroK8s cluster (API VIP `192.168.0.108:16443`)
 with the permanent taint `blazn.dev/sandbox-node=true:NoSchedule`.
@@ -177,6 +176,25 @@ and only then unhold and refresh the snap on `ben1`.
 4. Update the `node-install-plan-template-v1.json` key of Secret
    `api-dev-node` from `main` and restart `api-dev`, so issued plans pin the
    published binaries.
+
+## Retired on 2026-10-01
+
+- The earlier test deployment `api` (`https://blazn-test.frontro.com`) and the
+  objects only it used. It had served nothing but its own health probes.
+- The ZITADEL stack in `blazn-identity-dev` (API, login UI, Postgres). The API
+  runs with no identity provider.
+
+Their manifests are in git history (`infra/frontro` at commit `2e5215fb`) and
+can be re-applied. Kept on purpose, because deleting them is not reversible:
+the PersistentVolumeClaims `database` and `bootstrap` and the Secrets
+`database-tls` and `identity-ca` in `blazn-identity-dev`. Delete them once
+nobody needs the old ZITADEL data.
+
+The shared gateway still has routes for `blazn-test.frontro.com` and for the
+ZITADEL paths on `api.blazn.frontro.com` (`/ui/v2/login`, `/oauth/v2/`,
+`/oidc/v1/`, `/.well-known/openid-configuration`); they now answer 502 or 500. They
+are listed in `infra/frontro/edge/blazn-routes.yaml` and should be removed
+from the gateway's ConfigMap by whoever next changes it.
 
 ## Known hardening gaps
 
