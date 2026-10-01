@@ -16,8 +16,9 @@ checks are read-only.
         --source REPOSITORY=COMMIT --ssh "-J ben1 blazn@NODE" --blazn .local/bin/blazn \\
         --psql "ssh DATABASE_HOST sudo -n -u postgres psql -d blazn_test -At" --repeat 2 > report.json
 
-The test file is written into the first --source checkout unless --remote-path
-names another mounted workspace path. The grant query is sent to --psql on
+The test file is written into the sandbox's first source checkout (its real
+destination is read from the sandbox), or /workspace/artifacts when it has no
+sources, unless --remote-path names another mounted workspace path. The grant query is sent to --psql on
 standard input.
 
 Progress goes to stderr; the JSON report goes to stdout. No token, grant or
@@ -107,6 +108,31 @@ def wait_for_state(runner, sandbox_id, wanted, timeout, absent_is=None):
     raise StepFailed(f"timed out in state {state!r} waiting for {'/'.join(sorted(wanted))}")
 
 
+def default_remote_path(runner, sandbox_id):
+    """A transfer needs a mounted workspace volume. Use the first source
+    checkout's real destination (the template decides it, not the --source
+    name); a sandbox without sources has only its artifacts volume."""
+    _, value = runner.blazn("sandbox", "get", sandbox_id)
+    bindings = sandbox_of(value).get("sourceBindings") or []
+    directory = bindings[0].get("destination", "").rstrip("/") if bindings else ""
+    return f"{directory or '/workspace/artifacts'}/.blazn-qualification.bin"
+
+
+def cleanup(runner, sandbox_id, tag):
+    """Best-effort removal of a sandbox whose iteration failed. Delete is only
+    accepted once the sandbox has stopped, so wait for that first."""
+    runner.blazn("sandbox", "stop", sandbox_id, "--request-id", f"qual-cleanup-stop-{tag}")
+    try:
+        wait_for_state(runner, sandbox_id, {"stopped", "deleted", "failed"}, runner.options.stop_timeout, absent_is="deleted")
+    except StepFailed:
+        pass
+    code, value = runner.blazn("sandbox", "delete", sandbox_id, "--request-id", f"qual-cleanup-delete-{tag}")
+    try:
+        return wait_for_state(runner, sandbox_id, {"deleted"}, runner.options.stop_timeout, absent_is="deleted") == "deleted"
+    except StepFailed:
+        return False
+
+
 def digest_command(path):
     quoted = shlex.quote(path)
     return f"(sha256sum {quoted} 2>/dev/null || shasum -a 256 {quoted}) | cut -d' ' -f1"
@@ -150,10 +176,12 @@ def iteration(runner, number, steps):
         expected = made.stdout.strip()
         step("test file created", made.returncode == 0 and len(expected) == 64, f"{options.size} bytes")
 
-        code, value = runner.blazn("sandbox", "upload", sandbox_id, local + ".up", options.remote_path)
-        step("upload", code == 0 and isinstance(value, dict) and value.get("sha256", "").split(":")[-1] == expected, "digest matches")
+        remote = options.remote_path or default_remote_path(runner, sandbox_id)
+        code, value = runner.blazn("sandbox", "upload", sandbox_id, local + ".up", remote)
+        step("upload", code == 0 and isinstance(value, dict) and value.get("sha256", "").split(":")[-1] == expected,
+             f"digest matches at {remote}" if code == 0 else f"{remote}: {error_code(value) or str(value)[:160]}")
 
-        code, value = runner.blazn("sandbox", "download", sandbox_id, options.remote_path, local + ".down")
+        code, value = runner.blazn("sandbox", "download", sandbox_id, remote, local + ".down")
         fetched = runner.host(digest_command(local + ".down")).stdout.strip()
         step("download", code == 0 and fetched == expected, "downloaded bytes match the uploaded file")
 
@@ -184,10 +212,11 @@ def iteration(runner, number, steps):
         if steps and steps[-1]["ok"] is not False:
             steps.append({"iteration": number, "step": "harness", "ok": False, "detail": str(failure)})
             print(f"FAIL [{number}] {failure}", file=sys.stderr, flush=True)
+        cleaned = None
         if sandbox_id and not options.keep_failed:
-            runner.blazn("sandbox", "stop", sandbox_id, "--request-id", f"qual-cleanup-stop-{tag}")
-            runner.blazn("sandbox", "delete", sandbox_id, "--request-id", f"qual-cleanup-delete-{tag}")
-        return {"iteration": number, "sandboxId": sandbox_id, "ok": False}
+            cleaned = cleanup(runner, sandbox_id, tag)
+            print(f"{'cleaned up' if cleaned else 'COULD NOT clean up'} sandbox {sandbox_id}", file=sys.stderr, flush=True)
+        return {"iteration": number, "sandboxId": sandbox_id, "ok": False, "cleanedUp": cleaned}
     finally:
         runner.host(f"rm -f {shlex.quote(local)}.up {shlex.quote(local)}.down")
 
@@ -206,7 +235,7 @@ def main():
     parser.add_argument("--psql", default=os.environ.get("BLAZN_QUAL_PSQL", ""), help="command prefix for a read-only psql on the hosted database (psql -At ...)")
     parser.add_argument("--skip-grant-check", action="store_true", help="allow running without --psql; the report marks the check as skipped")
     parser.add_argument("--exec-command", default="uname -sm")
-    parser.add_argument("--remote-path", default="", help="file path inside the sandbox; defaults to a file in the first --source checkout (/workspace/src/REPOSITORY/)")
+    parser.add_argument("--remote-path", default="", help="file path inside the sandbox; defaults to a file in the first source checkout's destination, or /workspace/artifacts when the sandbox has no sources")
     parser.add_argument("--size", type=int, default=65536)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--ready-timeout", type=int, default=600)
@@ -217,12 +246,6 @@ def main():
     options = parser.parse_args()
     if not options.psql and not options.skip_grant_check:
         parser.error("--psql is required (or pass --skip-grant-check)")
-    if not options.remote_path:
-        # Transfers need a mounted workspace volume. A source checkout is one;
-        # /workspace/tmp is accepted by the CLI but is not mounted by templates.
-        if not options.source:
-            parser.error("--remote-path is required when no --source is given")
-        options.remote_path = f"/workspace/src/{options.source[0].split('=', 1)[0]}/.blazn-qualification.bin"
     if options.repeat < 1 or options.size < 1:
         parser.error("--repeat and --size must be positive")
 

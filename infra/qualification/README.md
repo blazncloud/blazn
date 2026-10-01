@@ -48,14 +48,17 @@ python3 infra/qualification/sandbox-lifecycle.py \
   --repeat 2 > report.json
 ```
 
-The test file is written into the first `--source` checkout
-(`/workspace/src/REPOSITORY/`), because transfers need a mounted workspace
-volume; pass `--remote-path` to use another one. The grant query is sent to the
+The test file is written into the sandbox's first source checkout, because
+transfers need a mounted workspace volume. The checkout's destination is read
+from the sandbox (the template sets it, not the `--source` name); a sandbox
+without sources uses `/workspace/artifacts`. Pass `--remote-path` to choose
+another mounted path. The grant query is sent to the
 `--psql` command on standard input, so an `ssh` prefix works as written.
 
 Omit `--ssh` to use a CLI on the local machine. The report lists every step
-per iteration and the node each sandbox ran on. A failed run stops and deletes
-its sandbox unless `--keep-failed` is given.
+per iteration and the node each sandbox ran on. A failed run stops its sandbox, waits
+for it to stop, deletes it, and reports `cleanedUp`, unless `--keep-failed` is
+given.
 
 `test-sandbox-lifecycle.sh` checks the script itself against a fake CLI,
 cluster and database: a healthy run passes, and a leftover Pod, an active

@@ -35,7 +35,7 @@ if command == "get":
             out({"error": {"code": "not_found", "message": "sandbox not found"}}, 1)
         record["state"] = nxt
         if nxt == "ready": (state / (i + ".pod")).write_text("x")
-    save(i, record); out({"id": i, "state": record["state"]})
+    save(i, record); out({"id": i, "state": record["state"], "sourceBindings": [{"repository": "source", "destination": "/workspace/src/blazn"}]})
 if command == "exec":
     out({"sandboxId": i, "remoteExitCode": 0, "stdoutBase64": base64.b64encode(b"Linux x86_64\n").decode(), "stderrBase64": "", "truncated": False})
 if command in ("upload", "download"):
@@ -48,7 +48,9 @@ if command in ("upload", "download"):
     else: shutil.copyfile(stored, dst)
     out({"sandboxId": i, "sha256": hashlib.sha256(stored.read_bytes()).hexdigest(), "size": stored.stat().st_size})
 if command == "stop": record["state"] = "stopping"; save(i, record); out({"status": "accepted"})
-if command == "delete": record["state"] = "deleting"; save(i, record); out({"status": "accepted"})
+if command == "delete":
+    if record["state"] != "stopped": out({"error": {"code": "state_conflict", "message": "sandbox is not stopped"}}, 1)
+    record["state"] = "deleting"; save(i, record); out({"status": "accepted"})
 out({"error": {"code": "usage"}}, 2)
 PY
 cat >"$tmp/kubectl" <<'PY'
@@ -75,7 +77,7 @@ chmod +x "$tmp/blazn" "$tmp/kubectl" "$tmp/psql"
 
 run() {
   FAKE_STATE="$tmp/state" python3 "$ROOT/sandbox-lifecycle.py" --workspace 11111111-1111-4111-8111-111111111111 \
-    --template coding-agent@1 --source blazn=0123456789abcdef0123456789abcdef01234567 --blazn "$tmp/blazn" --kubectl "$tmp/kubectl" --psql "$tmp/psql" --scratch "$tmp/scratch" \
+    --template coding-agent@1 --source source=0123456789abcdef0123456789abcdef01234567 --blazn "$tmp/blazn" --kubectl "$tmp/kubectl" --psql "$tmp/psql" --scratch "$tmp/scratch" \
     --poll 0 --residue-timeout 1 "$@"
 }
 
@@ -95,6 +97,9 @@ if (export FAKE_LEAK=1; run >"$tmp/leak.json" 2>/dev/null); then printf 'a lefto
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert not r["passed"] and r["steps"][-1]["step"]=="no Pod or Sandbox object remains", r["steps"][-1]' "$tmp/leak.json"
 if run --remote-path /workspace/tmp/file >"$tmp/path.json" 2>/dev/null; then printf 'an unmounted transfer path was not detected\n' >&2; exit 1; fi
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert not r["passed"] and r["steps"][-1]["step"]=="upload", r["steps"][-1]' "$tmp/path.json"
+# A failed iteration must leave nothing behind: its sandbox is stopped, then deleted.
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["iterations"][-1]["cleanedUp"] is True, r["iterations"]' "$tmp/path.json"
+[ -z "$(find "$tmp/state" -type f ! -name '*.pod' ! -name '*.file')" ] || { printf 'a failed iteration left its sandbox behind\n' >&2; exit 1; }
 if run --psql "" >/dev/null 2>&1; then printf 'a missing grant check was silently accepted\n' >&2; exit 1; fi
 run --psql "" --skip-grant-check >"$tmp/skip.json" 2>"$tmp/skip.err" || { cat "$tmp/skip.err" >&2; exit 1; }
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["passed"] and r["skipped"]==["no active access grant remains"], r' "$tmp/skip.json"
