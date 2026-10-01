@@ -180,7 +180,7 @@ done <"$tmp/phase4c-inventory/phase4c-targets"
 sudo -n chown -R "$(id -u):$(id -g)" "$tmp/phase4c-transaction"
 kctl delete clusterqueue "blazn-phase4c-$cluster_suffix" --wait=true --timeout=120s >/dev/null
 kctl delete resourceflavor "blazn-phase4c-$cluster_suffix" --wait=true --timeout=120s >/dev/null
-kctl label node "$node" blazn.dev/sandbox-eligible- >/dev/null
+kctl label node "$node" blazn.dev/sandbox-eligible->/dev/null
 
 kapply <"$tmp/agent-sandbox.yaml" >/dev/null
 kctl wait --for=condition=Available deployment/agent-sandbox-controller -n agent-sandbox-system --timeout=180s
@@ -198,7 +198,7 @@ pod_delete=$(kctl auth can-i --as=system:serviceaccount:agent-sandbox-system:age
 # this uniquely owned disposable kind bridge and dies with the cluster.
 kctl create namespace blazn-poc-sandboxes >/dev/null
 kctl create serviceaccount blazn-sandbox-runner -n blazn-poc-sandboxes >/dev/null
-kctl label node "$node" blazn.dev/sandbox-eligible=true --overwrite >/dev/null
+kctl label node "$node" blazn.dev/sandbox-eligible=true node-restriction.kubernetes.io/blazn-workspace=workspace-kind --overwrite >/dev/null
 cat <<EOF | kapply >/dev/null
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
@@ -270,7 +270,7 @@ done
 kctl delete namespace blazn-poc-sandboxes --wait=true --timeout=120s >/dev/null
 kctl delete clusterqueue "blazn-adapter-$cluster_suffix" --wait=true --timeout=120s >/dev/null
 kctl delete resourceflavor "blazn-adapter-$cluster_suffix" --wait=true --timeout=120s >/dev/null
-kctl label node "$node" blazn.dev/sandbox-eligible- >/dev/null
+kctl label node "$node" blazn.dev/sandbox-eligible- node-restriction.kubernetes.io/blazn-workspace- >/dev/null
 
 sed \
   -e "s|SYNTHETIC_IMAGE|$SYNTHETIC_IMAGE|" \
