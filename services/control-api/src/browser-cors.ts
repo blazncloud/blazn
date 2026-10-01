@@ -9,12 +9,18 @@ export function browserOrigins(raw: string | undefined): Set<string> {
   }));
 }
 
+// The activation page's own forms post here as plain navigations. The page is
+// served with Referrer-Policy: no-referrer, so a browser sends "Origin: null"
+// with them. They carry no bearer credential and are guarded by the device
+// code and the emailed code, so they do not take part in the origin check.
+const activationForms = new Set(["/v1/auth/device/email-code", "/v1/auth/device/email-verify"]);
+
 // Only JSON/bearer API routes participate. OIDC navigation and its sealed
 // activation capability keep their existing cookie and CSRF contract.
 export function browserCors(request: IncomingMessage, response: ServerResponse, allowed: Set<string>): boolean {
   if (allowed.size === 0) return false;
   const path = request.url?.split("?")[0] ?? "";
-  if (!path.startsWith("/v1/") || path.startsWith("/v1/auth/oidc/")) return false;
+  if (!path.startsWith("/v1/") || path.startsWith("/v1/auth/oidc/") || activationForms.has(path)) return false;
   response.setHeader("Vary", "Origin");
   const origin = request.headers.origin;
   if (!origin) return false;

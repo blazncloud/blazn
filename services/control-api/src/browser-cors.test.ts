@@ -42,6 +42,14 @@ test("exact browser CORS preserves bearer authorization errors and OIDC navigati
     const callback = await fetch(base + "/v1/auth/oidc/callback", { headers: { Origin: "https://issuer.example" } });
     assert.equal(callback.status, 401);
     assert.equal(callback.headers.get("access-control-allow-origin"), null);
+    // The activation page is served with no-referrer, so its forms arrive with "Origin: null".
+    for (const form of ["/v1/auth/device/email-code", "/v1/auth/device/email-verify"]) {
+      const posted = await fetch(base + form, { method: "POST", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: "user_code=AAAA-BBBB" });
+      assert.equal(posted.status, 401, form);
+      assert.equal(posted.headers.get("access-control-allow-origin"), null);
+    }
+    const nullOrigin = await fetch(base + "/v1/workspaces", { method: "POST", headers: { Origin: "null" } });
+    assert.equal(nullOrigin.status, 403);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
