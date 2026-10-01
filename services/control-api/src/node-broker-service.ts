@@ -88,6 +88,17 @@ export class NodeBrokerService {
     const result = await this.providerCall((signal) => this.issuer.hold!({ clusterId: input.clusterId, expectedNodeName: input.nodeName, nodeUid: input.nodeUid, holdReason: input.holdReason as PlacementHoldReason }, signal));
     return result.changed;
   }
+  // drainNode marks an activated worker's Node as leaving. The issuer touches
+  // only a Blazn worker with the bound UID.
+  async drainNode(input: { clusterId: string; nodeName: string; nodeUid: string }): Promise<boolean> {
+    if (!input.clusterId || input.clusterId.length > 128 || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(input.nodeName) || !UUID.test(input.nodeUid)) {
+      invalid("worker drain binding is invalid");
+    }
+    if (!this.issuer.drain) throw new Error("worker drainer is unavailable");
+    const result = await this.providerCall((signal) => this.issuer.drain!({ clusterId: input.clusterId, expectedNodeName: input.nodeName, nodeUid: input.nodeUid }, signal));
+    return result.drained;
+  }
+
 
 
   async issue(

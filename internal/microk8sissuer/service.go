@@ -33,6 +33,7 @@ type Backend interface {
 	Retire(context.Context, string, string) (bool, error)
 	Assign(context.Context, string, string, string) (bool, error)
 	Hold(context.Context, string, string, string) (bool, error)
+	Drain(context.Context, string, string) (bool, error)
 	Healthy(context.Context) error
 }
 type NodeObservation struct {
@@ -88,6 +89,9 @@ func (s *Service) Handle(ctx context.Context, req Request) (any, error) {
 	}
 	if req.Operation == "hold" {
 		return s.hold(ctx, req)
+	}
+	if req.Operation == "drain" {
+		return s.drain(ctx, req)
 	}
 	return s.revoke(ctx, req.ProviderHandle)
 }
@@ -475,6 +479,25 @@ func (s *Service) hold(ctx context.Context, req Request) (HoldResponse, error) {
 			return &ProtocolError{Code: "microk8s_unavailable", Message: "worker placement hold failed"}
 		}
 		response = HoldResponse{SchemaVersion: SchemaVersion, Operation: "hold", ClusterID: req.ClusterID, NodeName: req.ExpectedNodeName, NodeUID: req.NodeUID, HoldReason: req.HoldReason, Changed: changed}
+		return nil
+	})
+	return response, err
+}
+
+// drain marks an activated Blazn worker's Node as leaving, so its workloads
+// are evicted before the node leaves the cluster and is retired.
+func (s *Service) drain(ctx context.Context, req Request) (DrainResponse, error) {
+	var response DrainResponse
+	err := s.locked(ctx, func() error {
+		drained, err := s.backend.Drain(ctx, req.ExpectedNodeName, req.NodeUID)
+		if err != nil {
+			var protocol *ProtocolError
+			if errors.As(err, &protocol) {
+				return protocol
+			}
+			return &ProtocolError{Code: "microk8s_unavailable", Message: "worker drain failed"}
+		}
+		response = DrainResponse{SchemaVersion: SchemaVersion, Operation: "drain", ClusterID: req.ClusterID, NodeName: req.ExpectedNodeName, NodeUID: req.NodeUID, Drained: drained}
 		return nil
 	})
 	return response, err

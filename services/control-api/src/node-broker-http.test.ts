@@ -71,3 +71,15 @@ test("broker placement-hold route accepts an exact hold or release and rejects u
     assert.equal(seen.length,2);
   }finally{await new Promise<void>(r=>server.close(()=>r()));}
 });
+
+test("broker drain route accepts an exact binding and rejects user credentials",async()=>{
+  const seen:unknown[]=[];const service={async drainNode(value:unknown){seen.push(value);return true;}} as unknown as NodeBrokerService,server=createNodeBrokerServer(service);
+  await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));const origin=`http://127.0.0.1:${(server.address() as AddressInfo).port}`,drain={clusterId:"cluster-a",nodeName:"worker-a",nodeUid:"44444444-4444-4444-8444-444444444444"};
+  const post=(body:unknown,headers:Record<string,string>={})=>fetch(`${origin}/v1/node-service/node-drains`,{method:"POST",headers:{"content-type":"application/json",...headers},body:JSON.stringify(body)});
+  try{
+    const drained=await post(drain);assert.equal(drained.status,200);assert.deepEqual(await drained.json(),{drained:true});assert.deepEqual(seen,[drain]);
+    assert.equal((await post({...drain,holdReason:""})).status,400);
+    assert.equal((await post(drain,{authorization:"Bearer user-token"})).status,401);
+    assert.equal(seen.length,1);
+  }finally{await new Promise<void>(r=>server.close(()=>r()));}
+});

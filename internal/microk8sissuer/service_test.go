@@ -27,6 +27,7 @@ type fakeBackend struct {
 	retired               []string
 	assigned              []string
 	held                  []string
+	drained               []string
 	retireDeleted         bool
 	retireErr             error
 }
@@ -38,6 +39,11 @@ func (f *fakeBackend) Assign(_ context.Context, name, uid, workspaceID string) (
 
 func (f *fakeBackend) Hold(_ context.Context, name, uid, reason string) (bool, error) {
 	f.held = append(f.held, name+"/"+uid+"/"+reason)
+	return true, nil
+}
+
+func (f *fakeBackend) Drain(_ context.Context, name, uid string) (bool, error) {
+	f.drained = append(f.drained, name+"/"+uid)
 	return true, nil
 }
 

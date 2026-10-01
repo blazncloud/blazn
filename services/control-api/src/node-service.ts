@@ -105,6 +105,23 @@ export class NodeService {
     return tx.completeControlPlaneOperation({operationId:operation.id,workspaceId:node.workspaceId,nodeId:node.id,type:operation.type,receipt,result:{lifecycleState:placement.to}});
   }
 
+  // drain authorizes a leaving node's request to have its Node marked
+  // retired and unschedulable. The request is proven by the node's active
+  // identity over blazn-node-drain-v1 and must name the node's own bound
+  // Kubernetes Node; the caller then asks the issuer to drain it.
+  async drain(input:{nodeId:string;identityGeneration:number;sentAt:string;kubernetesBinding:KubernetesBinding},proof:string):Promise<KubernetesBinding>{
+    validUuid(input.nodeId,"nodeId");if(!Number.isSafeInteger(input.identityGeneration)||input.identityGeneration<1)invalid("identityGeneration is invalid");
+    const sentAt=new Date(input.sentAt);if(Number.isNaN(sentAt.getTime()))invalid("sentAt is invalid");validateBinding(input.kubernetesBinding);
+    return this.store.transaction(async tx=>{
+      const identity=await tx.activeIdentity(input.nodeId,false);if(!identity||identity.trustState==="revoked"||identity.lifecycleState==="removed")throw new NodeHttpError("identity_rejected","node identity is not active");
+      if(identity.generation!==input.identityGeneration||!verifyNodeProof(identity.publicKey,"blazn-node-drain-v1",input,proof))throw new NodeHttpError("identity_rejected","node proof could not be verified");
+      if(Math.abs(this.now().getTime()-sentAt.getTime())>5*60_000)throw new NodeHttpError("heartbeat_skew","drain timestamp exceeds allowed clock skew");
+      const node=await requiredNode(tx,input.nodeId,false);const bound=node.kubernetesBinding,requested=input.kubernetesBinding;
+      if(!bound||bound.clusterId!==requested.clusterId||bound.nodeName!==requested.nodeName||bound.nodeUid!==requested.nodeUid)throw new NodeHttpError("version_conflict","drain Kubernetes binding is not this Node's binding");
+      return bound;
+    }).catch(mapStoreError);
+  }
+
   placementDrift(limit:number,nodeId?:string):Promise<PlacementDrift[]>{return this.store.transaction(tx=>tx.placementDrift(limit,nodeId));}
   recordPlacementHold(input:{nodeId:string;workspaceId:string;prior:PlacementHold|null;applied:PlacementHold|null}):Promise<boolean>{return this.store.transaction(tx=>tx.recordPlacementHold(input));}
 

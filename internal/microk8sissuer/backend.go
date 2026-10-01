@@ -331,6 +331,79 @@ func (b *MicroK8sBackend) Assign(ctx context.Context, name, uid, workspaceID str
 	return true, nil
 }
 
+// RetiredTaintKey evicts every workload that does not tolerate it from a
+// Blazn worker that is leaving the cluster; retire later deletes the Node.
+const RetiredTaintKey = "blazn.dev/retired"
+
+// Drain marks a Blazn worker's Node as leaving: it adds the
+// blazn.dev/retired=true:NoExecute taint and sets unschedulable, in one patch
+// preconditioned on the observed resourceVersion that keeps every other
+// taint. The node then only waits for its Pods to go and leaves, so its own
+// credential need not change taints (NodeRestriction, M0.9). It returns false
+// when the Node is already drained, and refuses a control-plane Node or one
+// without a Blazn marker.
+func (b *MicroK8sBackend) Drain(ctx context.Context, name, uid string) (bool, error) {
+	if err := b.validateConfiguration(); err != nil {
+		return false, err
+	}
+	if !namePattern.MatchString(name) || !uuidPattern.MatchString(uid) {
+		return false, fmt.Errorf("worker drain binding is invalid")
+	}
+	out, err := b.Runner.Run(ctx, b.KubectlPath, []string{"get", "node", name, "-o", "json"})
+	if err != nil {
+		return false, err
+	}
+	var node struct {
+		Metadata struct {
+			Name, UID, ResourceVersion string
+			Labels                     map[string]string
+		} `json:"metadata"`
+		Spec struct {
+			Unschedulable bool             `json:"unschedulable"`
+			Taints        []map[string]any `json:"taints"`
+		} `json:"spec"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&node); err != nil || node.Metadata.Name != name || node.Metadata.ResourceVersion == "" {
+		return false, fmt.Errorf("MicroK8s returned an invalid Node observation")
+	}
+	if node.Metadata.UID != uid {
+		return false, &ProtocolError{Code: "binding_conflict", Message: "Node UID differs from the drained binding"}
+	}
+	blazn := node.Metadata.Labels["blazn.dev/node"] == "true"
+	retired := false
+	for _, taint := range node.Spec.Taints {
+		key, _ := taint["key"].(string)
+		if key == "blazn.dev/sandbox-node" && taint["value"] == "true" && taint["effect"] == "NoSchedule" {
+			blazn = true
+		}
+		if key == RetiredTaintKey && taint["effect"] == "NoExecute" {
+			retired = true
+		}
+	}
+	if !blazn || isControlPlaneNode(node.Metadata.Labels) {
+		return false, &ProtocolError{Code: "drain_rejected", Message: "Node is not a Blazn worker"}
+	}
+	if retired && node.Spec.Unschedulable {
+		return false, nil
+	}
+	taints := append([]map[string]any{}, node.Spec.Taints...)
+	if !retired {
+		taints = append(taints, map[string]any{"key": RetiredTaintKey, "value": "true", "effect": "NoExecute"})
+	}
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/metadata/resourceVersion", "value": node.Metadata.ResourceVersion},
+		{"op": "add", "path": "/spec/taints", "value": taints},
+		{"op": "add", "path": "/spec/unschedulable", "value": true},
+	})
+	if err != nil {
+		return false, err
+	}
+	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"patch", "node", name, "--type=json", "-p", string(patch)}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // PlacementHoldTaint keeps new sandboxes off a Blazn node that is paused,
 // quarantined, draining, or offline. Sandbox Pods may tolerate only the
 // sandbox-node taint, so no sandbox can tolerate this one.

@@ -74,11 +74,23 @@ export interface WorkerCredentialIssuer {
     request: WorkerPlacementHoldRequest,
     signal: AbortSignal,
   ): Promise<{ changed: boolean }>;
+  drain?(
+    request: WorkerDrainRequest,
+    signal: AbortSignal,
+  ): Promise<{ drained: boolean }>;
 }
 
 // Placement holds keep new sandboxes off a Blazn node that is not active.
 // An empty reason releases the hold.
 export type PlacementHoldReason = "" | "paused" | "quarantined" | "draining" | "offline";
+
+// A drain marks a leaving Blazn worker's Node retired (NoExecute) and
+// unschedulable before the node leaves the cluster.
+export interface WorkerDrainRequest {
+  clusterId: string;
+  expectedNodeName: string;
+  nodeUid: string;
+}
 
 export interface WorkerPlacementHoldRequest {
   clusterId: string;

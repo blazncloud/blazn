@@ -184,3 +184,22 @@ test("pause, quarantine and resume complete with a verifiable control-plane rece
   assert.deepEqual(transitions,["active->paused","paused->quarantined","quarantined->active"]);
   await assert.rejects(()=>service.createOperation(principal,nodeId,"pause-param",{type:"pause",expectedVersion:7,parameters:{reason:"x"}}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="invalid_request");
 });
+
+test("drain requires the node's own identity, a fresh timestamp and its own bound Node",async()=>{
+  const pair=generateKeyPairSync("ed25519"),other=generateKeyPairSync("ed25519");const publicKey=pair.publicKey.export({format:"jwk"}).x!;
+  const binding={clusterId:"cluster-a",nodeName:"ben2",nodeUid:"uid-a",resourceVersion:"9"};let lifecycle="active";
+  const tx=baseTx({activeIdentity:async()=>({nodeId,workspaceId,generation:2,publicKey,publicKeyFingerprint:"c".repeat(64),signingKeyId:"node/v1",lifecycleState:lifecycle,trustState:"verified",nodeVersion:1}),
+    nodeById:async()=>({id:nodeId,workspaceId,name:"ben2",kind:"shared" as const,platform:"linux" as const,architecture:"amd64" as const,lifecycleState:"active" as const,trustState:"verified" as const,agentEligible:true,version:1,capabilityVersion:1,identity:null,kubernetesBinding:binding,createdAt:"2026-08-22T00:00:00Z",updatedAt:"2026-08-22T00:00:00Z"})});
+  const service=new NodeService(store(tx),async()=>Buffer.alloc(32),planFactory,()=>new Date("2026-08-22T12:00:00Z"));
+  const request=(overrides:Record<string,unknown>={})=>({nodeId,identityGeneration:2,sentAt:"2026-08-22T12:00:30Z",kubernetesBinding:{...binding,resourceVersion:"12"},...overrides}) as Parameters<NodeService["drain"]>[0];
+  const prove=(body:unknown,key=pair.privateKey,prefix="blazn-node-drain-v1")=>sign(null,Buffer.from(`${prefix}\n${canonicalJson(body)}`),key).toString("base64url");
+  const good=request();
+  assert.deepEqual(await service.drain(good,prove(good)),binding,"a newer resourceVersion still names the same Node");
+  const rejects=async(body:Parameters<NodeService["drain"]>[0],proof:string,code:string)=>assert.rejects(()=>service.drain(body,proof),(e:unknown)=>e instanceof NodeHttpError&&e.code===code);
+  await rejects(good,prove(good,other.privateKey),"identity_rejected");
+  await rejects(good,prove(good,pair.privateKey,"blazn-node-heartbeat-v1"),"identity_rejected");
+  const stale=request({identityGeneration:1});await rejects(stale,prove(stale),"identity_rejected");
+  const old=request({sentAt:"2026-08-22T11:50:00Z"});await rejects(old,prove(old),"heartbeat_skew");
+  const foreign=request({kubernetesBinding:{...binding,nodeUid:"uid-b"}});await rejects(foreign,prove(foreign),"version_conflict");
+  lifecycle="removed";await rejects(good,prove(good),"identity_rejected");
+});
