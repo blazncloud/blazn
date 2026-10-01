@@ -124,7 +124,7 @@ function build(stores: FakeStores, sandbox: FakeSandbox, routes: ModelRoute[], o
   let clock = Date.now();
   const options: AgentRunExecutorOptions = {
     workerId: "worker-1", agentDirectory: directory, imageAgentPath: "/opt/blazn/agent", uploadedAgentPath: "/workspace/artifacts/blazn-agent-bin",
-    harnessBinary: async () => Buffer.from("binary"), sandboxReadySeconds: 60, idleSeconds: 5, waitSeconds: 1, messageLeaseSeconds: 300, expiryMarginSeconds: 60,
+    harnessBinary: async () => Buffer.from("binary"), sandboxReadySeconds: 60, nodeObservationSeconds: 20, idleSeconds: 5, waitSeconds: 1, messageLeaseSeconds: 300, expiryMarginSeconds: 60,
     maxStepsPerTurn: 10, commandTimeoutSeconds: 30, now: () => clock, sleep: async (milliseconds) => { clock += milliseconds; }, ...overrides,
   };
   return new AgentRunExecutor(new AgentRunControllerService(stores), stores, sandbox, new ModelRouter(routes), options);
@@ -189,6 +189,10 @@ test("a Sandbox that never becomes ready is retried, and a lost lease abandons t
   const stuck = new FakeStores();
   await assert.rejects(() => build(stuck, new FakeSandbox(), stubRoute, { sandboxReadySeconds: 10 }).execute(item(), new AbortController().signal), (error: unknown) => error instanceof RunRetryable && error.code === "sandbox_not_ready");
   assert.equal(stuck.finalized, undefined);
+
+  const unobserved = new FakeStores(); unobserved.state.sandboxState = "ready";
+  await assert.rejects(() => build(unobserved, new FakeSandbox(), stubRoute).execute(item(), new AbortController().signal), (error: unknown) => error instanceof RunRetryable && error.code === "sandbox_node_unobserved");
+  assert.equal(unobserved.bound, 0);
 
   const failed = new FakeStores(); failed.state.sandboxState = "failed";
   await assert.rejects(() => build(failed, new FakeSandbox(), stubRoute).execute(item(), new AbortController().signal), (error: unknown) => error instanceof RunRetryable && error.code === "sandbox_unavailable");

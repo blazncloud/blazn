@@ -64,6 +64,7 @@ export async function loadAgentRunControllerConfig(env: NodeJS.ProcessEnv = proc
       return binaries.get(architecture);
     },
     sandboxReadySeconds: integer("BLAZN_AGENT_RUN_SANDBOX_READY_SECONDS", 1000, 30, 3600),
+    nodeObservationSeconds: integer("BLAZN_AGENT_RUN_NODE_OBSERVATION_SECONDS", 60, 5, 600),
     idleSeconds: integer("BLAZN_AGENT_RUN_IDLE_SECONDS", 300, 5, 7200),
     waitSeconds: integer("BLAZN_AGENT_RUN_WAIT_SECONDS", 20, 1, 30),
     messageLeaseSeconds: 300,

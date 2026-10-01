@@ -22,6 +22,8 @@ export interface AgentRunExecutorOptions {
   /** Returns the harness executable for an architecture, when the controller ships one. */
   harnessBinary: (architecture: "amd64" | "arm64") => Promise<Buffer | undefined>;
   sandboxReadySeconds: number;
+  /** How long a ready Sandbox may lack its Node observation before the Run is retried. */
+  nodeObservationSeconds: number;
   idleSeconds: number;
   waitSeconds: number;
   messageLeaseSeconds: number;
@@ -58,9 +60,16 @@ export class AgentRunExecutor {
     const lease: AgentRunLease = { runId: item.runId, workerId: this.options.workerId, leaseToken: item.leaseToken };
     let execution = await this.current(lease);
     const deadline = this.now() + this.options.sandboxReadySeconds * 1000;
+    let readySince: number | undefined;
     while (!((execution.sandboxState === "ready" || execution.sandboxState === "running") && execution.nodeId)) {
       if (deadSandboxStates.includes(execution.sandboxState)) throw new RunRetryable("sandbox_unavailable");
       if (this.now() > deadline) throw new RunRetryable("sandbox_not_ready");
+      // The Sandbox controller records which Node the Sandbox runs on while it
+      // creates it. A ready Sandbox that still has no record will never get one.
+      if (execution.sandboxState === "ready" || execution.sandboxState === "running") {
+        readySince ??= this.now();
+        if (this.now() - readySince > this.options.nodeObservationSeconds * 1000) throw new RunRetryable("sandbox_node_unobserved");
+      }
       await this.sleep(2000, signal);
       execution = await this.current(lease);
     }

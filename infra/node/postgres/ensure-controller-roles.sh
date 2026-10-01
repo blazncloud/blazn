@@ -145,7 +145,15 @@ BEGIN
               ('agent_run_controller_renew','uuid,text,uuid,integer'),
               ('agent_run_controller_bind_sandbox','uuid,text,uuid,bigint,uuid,uuid'),
               ('agent_run_controller_retry','uuid,text,uuid,integer,text'),
-              ('agent_run_controller_finalize','uuid,text,uuid,bigint,text,text,uuid[],bigint,text[]')
+              ('agent_run_controller_finalize','uuid,text,uuid,bigint,text,text,uuid[],bigint,text[]'),
+              ('agent_run_controller_execution','uuid,text,uuid'),
+              ('agent_run_controller_issue_grant','uuid,text,uuid,uuid,text,text,integer'),
+              ('agent_run_controller_claim_message','uuid,text,uuid,integer'),
+              ('agent_run_controller_deliver_message','uuid,text,uuid,uuid,uuid'),
+              ('agent_run_controller_record_reply','uuid,text,uuid,bigint,uuid,text'),
+              ('agent_run_controller_record_event','uuid,text,uuid,bigint,text,jsonb'),
+              ('agent_run_controller_record_artifact','uuid,text,uuid,text,bytea'),
+              ('agent_run_controller_release_sandboxes','integer')
             )
           END
         )
