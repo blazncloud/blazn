@@ -115,14 +115,11 @@ File transfers need a mounted workspace volume. A source checkout
 upload there fails with `sandbox_upload_failed`.
 
 **Status:** this lifecycle passed twice on a registered node on 2026-10-01
-with no leftover Pods, Sandbox objects or active grants (plan item M4.2).
-Known gaps, tracked in the delivery plan:
+with no leftover Pods, Sandbox objects or active grants (plan item M4.2). A
+freshly registered node runs sandboxes with no extra step: Blazn has its own
+scheduling queue, and a sandbox is placed only on an eligible node of its own
+workspace (M4.7, M4.3). Known gaps, tracked in the delivery plan:
 
-- **A fresh node needs one manual step before it runs a sandbox (M4.7).** The
-  shared scheduling queue only places sandboxes on nodes labeled
-  `frontro.io/agent-workloads=true`, and node activation does not add that
-  label yet. A cluster administrator adds it:
-  `kubectl label node NODE_NAME frontro.io/agent-workloads=true`.
 - A create that fails before the controller records it (for example an
   unschedulable Pod) leaves a sandbox that the normal stop and delete cannot
   clean up (M4.8).
