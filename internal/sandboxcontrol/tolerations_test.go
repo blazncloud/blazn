@@ -71,7 +71,11 @@ func TestLegacySandboxSpecWithoutTolerationStillMatches(t *testing.T) {
 }
 
 func TestRenderedPodsTargetTheWorkspaceNodesAndConfiguredLocalQueue(t *testing.T) {
-	defer func() { _ = SetLocalQueue(QueueName) }()
+	previous := LocalQueue()
+	defer func() { _ = SetLocalQueue(previous) }()
+	if err := SetLocalQueue(QueueName); err != nil {
+		t.Fatal(err)
+	}
 	request := testCreate()
 	manifest := render(request, "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64))
 	if manifest.Spec.PodTemplate.Spec.NodeSelector[WorkspaceNodeLabel] != request.WorkspaceID || manifest.Spec.PodTemplate.Metadata.Labels[QueueLabel] != QueueName {

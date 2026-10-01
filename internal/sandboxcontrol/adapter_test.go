@@ -43,7 +43,7 @@ func (e *fakeExporter) Export(_ context.Context, sandbox SandboxRecord, specs []
 func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 	receipt, err := NewReceipt("request-admission-1", OperationCreate, SandboxRecord{
 		Name: "sandbox-a", Namespace: Namespace, UID: "sandbox-uid", ResourceVersion: "101",
-		WorkspaceID: "workspace-a", OwnerID: "owner-a", QueueName: QueueName,
+		WorkspaceID: "workspace-a", OwnerID: "owner-a", QueueName: localQueue,
 		TrustLevel: TrustApprovedPOC, State: StateReady, ArtifactContractDigest: "sha256:" + strings.Repeat("a", 64),
 	}, nil, time.Unix(1, 0))
 	if err != nil {
@@ -346,7 +346,7 @@ func (f *fakeAPI) observedWorkload() observedWorkload {
 		ClusterQueue string `json:"clusterQueue"`
 	}{ClusterQueue: "poc-cluster"}
 	value.Status.Conditions = []kubeCondition{{Type: "Admitted", Status: "True"}}
-	value.Spec.QueueName = QueueName
+	value.Spec.QueueName = localQueue
 	if f.omitWorkloadQueueLabel {
 		delete(value.Metadata.Labels, QueueLabel)
 	}
@@ -364,13 +364,13 @@ func TestCreateInjectsQueueIdentityRuntimeAndSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.QueueName != QueueName || record.WorkspaceID != "workspace-a" || record.OwnerID != "owner-a" || record.State != StateQueued {
+	if record.QueueName != localQueue || record.WorkspaceID != "workspace-a" || record.OwnerID != "owner-a" || record.State != StateQueued {
 		t.Fatalf("record=%#v", record)
 	}
 	if err := ValidateReceipt(receipt); err != nil {
 		t.Fatal(err)
 	}
-	if receipt.Operation != OperationCreate || receipt.RuntimeClass != "gvisor" || receipt.QueueName != QueueName {
+	if receipt.Operation != OperationCreate || receipt.RuntimeClass != "gvisor" || receipt.QueueName != localQueue {
 		t.Fatalf("receipt=%#v", receipt)
 	}
 }
@@ -1475,7 +1475,7 @@ func assertRendered(t *testing.T, object kubeSandbox) {
 		t.Fatalf("lifecycle intent=%#v", object.Spec)
 	}
 	pod := object.Spec.PodTemplate
-	if pod.Metadata.Labels[QueueLabel] != QueueName || pod.Spec.ServiceAccountName != ServiceAccountName || pod.Spec.AutomountServiceAccountToken || pod.Spec.RuntimeClassName != "gvisor" || pod.Spec.NodeSelector["blazn.dev/sandbox-eligible"] != "true" || len(pod.Spec.Tolerations) != 1 || pod.Spec.Tolerations[0] != SandboxNodeToleration {
+	if pod.Metadata.Labels[QueueLabel] != localQueue || pod.Spec.ServiceAccountName != ServiceAccountName || pod.Spec.AutomountServiceAccountToken || pod.Spec.RuntimeClassName != "gvisor" || pod.Spec.NodeSelector["blazn.dev/sandbox-eligible"] != "true" || len(pod.Spec.Tolerations) != 1 || pod.Spec.Tolerations[0] != SandboxNodeToleration {
 		t.Fatalf("pod=%#v", pod)
 	}
 	security := pod.Spec.Containers[0].SecurityContext

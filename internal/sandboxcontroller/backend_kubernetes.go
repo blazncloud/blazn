@@ -421,7 +421,7 @@ func verifyLiveRecord(item WorkItem, request sandboxcontrol.CreateRequest, recor
 		return err
 	}
 	if record.Name != item.SandboxID || record.Namespace != sandboxcontrol.Namespace || record.WorkspaceID != item.WorkspaceID ||
-		record.OwnerID != item.RequestedBy || record.QueueName != sandboxcontrol.QueueName || record.UID == "" ||
+		record.OwnerID != item.RequestedBy || !sandboxcontrol.IsBlaznQueue(record.QueueName) || record.UID == "" ||
 		record.ResourceVersion == "" || record.RuntimeClassName != "" || record.TrustLevel != sandboxcontrol.TrustApprovedPOC ||
 		record.ArtifactContractDigest != digest || !reflect.DeepEqual(record.Artifacts, artifacts) ||
 		requireFinalizer && !hasFinalizer(record.Finalizers) {
@@ -591,7 +591,7 @@ func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcon
 	}
 	if receipt.Operation != operation || receipt.RequestID != receiptRequestID || receipt.Name != request.Name ||
 		receipt.Namespace != sandboxcontrol.Namespace || receipt.WorkspaceID != request.WorkspaceID ||
-		receipt.OwnerID != request.OwnerID || receipt.UID != record.UID || receipt.QueueName != sandboxcontrol.QueueName ||
+		receipt.OwnerID != request.OwnerID || receipt.UID != record.UID || receipt.QueueName != record.QueueName || !sandboxcontrol.IsBlaznQueue(receipt.QueueName) ||
 		receipt.RuntimeClass != request.RuntimeClassName || receipt.ArtifactContractDigest != artifactDigest ||
 		operation != sandboxcontrol.OperationFinalize && receipt.ResourceVersion != record.ResourceVersion {
 		return errors.New("adapter receipt does not match the requested identity")
