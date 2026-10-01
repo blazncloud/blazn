@@ -22,7 +22,7 @@ python3 - "$tmp/boundary.yaml" <<'PY'
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 by = {(d["kind"], d["metadata"]["name"]): d for d in docs}
-assert len(by) == len(docs) == 8, f"expected 8 unique documents, got {len(docs)}"
+assert len(by) == len(docs) == 9, f"expected 9 unique documents, got {len(docs)}"
 tx = "99999999-9999-4999-8999-999999999999"
 for d in docs:
     assert d["metadata"]["annotations"]["blazn.dev/phase5-transaction"] == tx, d["kind"]
@@ -34,6 +34,8 @@ sa = by[("ServiceAccount", "blazn-sandbox-runner")]
 assert sa["metadata"]["namespace"] == "blazn-poc-sandboxes"
 assert sa["automountServiceAccountToken"] is False
 lq = by[("LocalQueue", "blazn-poc")]
+lq2 = by[("LocalQueue", "blazn-sandboxes")]
+assert lq2["spec"]["clusterQueue"] == "blazn-sandboxes", lq2
 assert lq["apiVersion"] == "kueue.x-k8s.io/v1beta1"
 assert lq["metadata"]["namespace"] == "blazn-poc-sandboxes"
 assert lq["spec"]["clusterQueue"] == "m1-light"

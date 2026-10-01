@@ -66,6 +66,17 @@ export interface WorkerCredentialIssuer {
     request: RetiredWorkerRequest,
     signal: AbortSignal,
   ): Promise<{ deleted: boolean }>;
+  assign?(
+    request: WorkerAssignmentRequest,
+    signal: AbortSignal,
+  ): Promise<{ assigned: boolean }>;
+}
+
+export interface WorkerAssignmentRequest {
+  clusterId: string;
+  expectedNodeName: string;
+  nodeUid: string;
+  workspaceId: string;
 }
 
 export interface RetiredWorkerRequest {

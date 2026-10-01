@@ -156,6 +156,8 @@ def mutate(doc, mutation):
         pod["hostNetwork"] = True
     elif mutation == "extra-node-selector":
         pod["nodeSelector"]["topology.kubernetes.io/zone"] = "z1"
+    elif mutation == "foreign-workspace-node":
+        pod["nodeSelector"]["node-restriction.kubernetes.io/blazn-workspace"] = "00000000-0000-4000-8000-000000000000"
     elif mutation == "wrong-service-account":
         pod["serviceAccountName"] = "default"
     elif mutation == "token-automount":

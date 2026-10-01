@@ -44,3 +44,14 @@ test("broker HTTP removes a retired worker only through the closed retirement ro
     assert.equal((await fetch(`${origin}/v1/node-service/node-retirements`)).status,405);
   }finally{await new Promise<void>(r=>server.close(()=>r()));}
 });
+
+test("broker HTTP assigns a worker's workspace only through the closed assignment route",async()=>{
+  let seen:unknown;const service={async assignNode(value:unknown){seen=value;return true;}} as unknown as NodeBrokerService,server=createNodeBrokerServer(service);
+  await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));const origin=`http://127.0.0.1:${(server.address() as AddressInfo).port}`,assignment={clusterId:"cluster-a",nodeName:"worker-a",nodeUid:"44444444-4444-4444-8444-444444444444",workspaceId:"55555555-5555-4555-8555-555555555555"};
+  try{
+    const response=await fetch(`${origin}/v1/node-service/node-assignments`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(assignment)});
+    assert.equal(response.status,200);assert.deepEqual(await response.json(),{assigned:true});assert.deepEqual(seen,assignment);
+    const extra=await fetch(`${origin}/v1/node-service/node-assignments`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...assignment,labels:{}})});assert.equal(extra.status,400);
+    const bearer=await fetch(`${origin}/v1/node-service/node-assignments`,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer user-token"},body:JSON.stringify(assignment)});assert.equal(bearer.status,401);
+  }finally{await new Promise<void>(r=>server.close(()=>r()));}
+});

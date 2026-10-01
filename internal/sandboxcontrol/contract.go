@@ -17,11 +17,15 @@ import (
 )
 
 const (
-	APIVersion             = "agents.x-k8s.io/v1beta1"
-	Kind                   = "Sandbox"
-	Namespace              = "blazn-poc-sandboxes"
-	QueueName              = "blazn-poc"
-	QueueLabel             = "kueue.x-k8s.io/queue-name"
+	APIVersion = "agents.x-k8s.io/v1beta1"
+	Kind       = "Sandbox"
+	Namespace  = "blazn-poc-sandboxes"
+	QueueName  = "blazn-poc"
+	QueueLabel = "kueue.x-k8s.io/queue-name"
+	// WorkspaceNodeLabel binds a Blazn node to the workspace that enrolled it.
+	// Only the control plane's issuer sets it: once the API server enforces
+	// NodeRestriction, kubelets cannot set labels under this prefix.
+	WorkspaceNodeLabel     = "node-restriction.kubernetes.io/blazn-workspace"
 	ManagedLabel           = "blazn.dev/managed"
 	WorkspaceLabel         = "blazn.dev/workspace"
 	OwnerLabel             = "blazn.dev/owner"
@@ -34,6 +38,26 @@ const (
 	ArtifactSchema         = "blazn.dev/sandbox-artifact/v1"
 	OrchestrationNotice    = "orchestration isolation only; approved non-sensitive POC workloads"
 )
+
+// localQueue is the Kueue LocalQueue sandbox Pods are labeled with. The logical
+// queue recorded by the API stays QueueName; the controller may route Pods to
+// the dedicated Blazn LocalQueue instead of the shared one.
+var localQueue = QueueName
+
+// SetLocalQueue selects the Kueue LocalQueue for new sandbox Pods.
+func SetLocalQueue(name string) error {
+	if name != QueueName && name != DedicatedLocalQueue {
+		return fmt.Errorf("sandbox LocalQueue %q is not a reviewed Blazn queue", name)
+	}
+	localQueue = name
+	return nil
+}
+
+// DedicatedLocalQueue targets the Blazn ClusterQueue whose flavor selects
+// sandbox-eligible nodes.
+const DedicatedLocalQueue = "blazn-sandboxes"
+
+func blaznQueue(name string) bool { return name == QueueName || name == DedicatedLocalQueue }
 
 type ErrorCode string
 

@@ -291,7 +291,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	workload := workloadCandidates[0]
 	condition, admitted := exactAdmittedCondition(workload.Status.Conditions)
 	if !hasExactControllerOwner(workload.Metadata.OwnerReferences, podAPIVersion, podKind, pod.Metadata.Name, pod.Metadata.UID) ||
-		!hasWorkloadLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || workload.Spec.QueueName != QueueName {
+		!hasWorkloadLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || !blaznQueue(workload.Spec.QueueName) {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "Workload did not preserve the exact admitted Pod ownership chain", nil)
 	}
 	if workload.Status.Admission == nil || !admitted {
@@ -387,7 +387,7 @@ func admissionSelector(workspaceID, ownerID, name string) string {
 }
 
 func hasAdmissionLabels(labels map[string]string, workspaceID, ownerID, name string) bool {
-	return hasWorkloadLabels(labels, workspaceID, ownerID, name) && labels[QueueLabel] == QueueName
+	return hasWorkloadLabels(labels, workspaceID, ownerID, name) && blaznQueue(labels[QueueLabel])
 }
 
 func hasWorkloadLabels(labels map[string]string, workspaceID, ownerID, name string) bool {
@@ -406,6 +406,12 @@ func validObservedListIdentity(apiVersion, kind, expectedAPIVersion, expectedKin
 func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool {
 	if legacyPodWithoutSandboxToleration(raw) {
 		expected.Tolerations = nil
+	}
+	var selectorProbe struct {
+		NodeSelector json.RawMessage `json:"nodeSelector"`
+	}
+	if json.Unmarshal(raw, &selectorProbe) == nil {
+		expected.NodeSelector = legacyNodeSelector(selectorProbe.NodeSelector, expected.NodeSelector)
 	}
 	expectedJSON, err := json.Marshal(expected)
 	if err != nil {

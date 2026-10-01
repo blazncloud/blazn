@@ -67,6 +67,8 @@ case "$*" in
   'get namespace blazn-poc-sandboxes -o json') owned_json ns-sandboxes 22222222-2222-4222-8222-222222222222 ;;
   'get serviceaccount blazn-sandbox-runner -n blazn-poc-sandboxes -o json') owned_json sa 33333333-3333-4333-8333-333333333333 ;;
   'get localqueue.kueue.x-k8s.io blazn-poc -n blazn-poc-sandboxes -o json') owned_json lq 44444444-4444-4444-8444-444444444444 ;;
+  'get localqueue.kueue.x-k8s.io blazn-sandboxes -n blazn-poc-sandboxes -o json') owned_json lq2 44444444-4444-4444-8444-444444444445 ;;
+  'get localqueue.kueue.x-k8s.io blazn-sandboxes -n blazn-poc-sandboxes -o jsonpath={.spec.clusterQueue}') printf 'blazn-sandboxes' ;;
   'get role blazn-agent-sandbox-controller -n blazn-poc-sandboxes -o json') owned_json role 55555555-5555-4555-8555-555555555555 ;;
   'get rolebinding blazn-agent-sandbox-controller -n blazn-poc-sandboxes -o json') owned_json rb 66666666-6666-4666-8666-666666666666 ;;
   'get validatingadmissionpolicy blazn-sandbox-boundary -o json') owned_json vap 77777777-7777-4777-8777-777777777777 ;;
@@ -152,7 +154,7 @@ new_transaction
 run_tool install-boundary.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase complete
-jq -e 'length == 8' "$transaction/owned-uids.json" >/dev/null
+jq -e 'length == 9' "$transaction/owned-uids.json" >/dev/null
 run_tool install-boundary.sh
 [ "$last_code" -eq 0 ]
 grep -Fq 'already complete' "$tmp/last-out"

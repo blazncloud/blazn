@@ -25,6 +25,14 @@ export function createNodeBrokerServer(service: NodeBrokerService, options: Node
         await service.observeJoin({ issuanceId: text(observation[1], "issuanceId", 64), clusterId: text(body.clusterId, "clusterId", 128), nodeName: text(body.nodeName, "nodeName", 253), nodeUid: text(body.nodeUid, "nodeUid", 128), resourceVersion: text(body.resourceVersion, "resourceVersion", 128) });
         return send(response, 200, { verified: true });
       }
+      if (request.url === "/v1/node-service/node-assignments") {
+        if (request.method !== "POST") throw new NodeHttpError("method_not_allowed", "method is not allowed for this route");
+        if (request.headers.authorization !== undefined) throw new NodeHttpError("unauthorized", "user and management credentials are not accepted by the Node broker");
+        const body = await jsonBody(request);
+        exact(body, ["clusterId", "nodeName", "nodeUid", "workspaceId"]);
+        const assigned = await service.assignNode({ clusterId: text(body.clusterId, "clusterId", 128), nodeName: text(body.nodeName, "nodeName", 253), nodeUid: text(body.nodeUid, "nodeUid", 128), workspaceId: text(body.workspaceId, "workspaceId", 64) });
+        return send(response, 200, { assigned });
+      }
       if (request.url === "/v1/node-service/node-retirements") {
         if (request.method !== "POST") throw new NodeHttpError("method_not_allowed", "method is not allowed for this route");
         if (request.headers.authorization !== undefined) throw new NodeHttpError("unauthorized", "user and management credentials are not accepted by the Node broker");

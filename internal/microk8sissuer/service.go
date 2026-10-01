@@ -31,6 +31,7 @@ type Backend interface {
 	Revoke(context.Context, string) error
 	Observe(context.Context, string) (NodeObservation, error)
 	Retire(context.Context, string, string) (bool, error)
+	Assign(context.Context, string, string, string) (bool, error)
 	Healthy(context.Context) error
 }
 type NodeObservation struct {
@@ -80,6 +81,9 @@ func (s *Service) Handle(ctx context.Context, req Request) (any, error) {
 	}
 	if req.Operation == "retire" {
 		return s.retire(ctx, req)
+	}
+	if req.Operation == "assign" {
+		return s.assign(ctx, req)
 	}
 	return s.revoke(ctx, req.ProviderHandle)
 }
@@ -212,6 +216,26 @@ func (s *Service) retire(ctx context.Context, req Request) (RetireResponse, erro
 			return &ProtocolError{Code: "microk8s_unavailable", Message: "retired worker removal failed"}
 		}
 		response = RetireResponse{SchemaVersion: SchemaVersion, Operation: "retire", ClusterID: req.ClusterID, NodeName: req.ExpectedNodeName, NodeUID: req.NodeUID, Deleted: deleted}
+		return nil
+	})
+	return response, err
+}
+
+// assign labels an active Blazn worker's Node with the workspace that enrolled
+// it, so the sandbox controller can pin each workspace's sandboxes to that
+// workspace's nodes. A Node already bound to another workspace is refused.
+func (s *Service) assign(ctx context.Context, req Request) (AssignResponse, error) {
+	var response AssignResponse
+	err := s.locked(ctx, func() error {
+		assigned, err := s.backend.Assign(ctx, req.ExpectedNodeName, req.NodeUID, req.WorkspaceID)
+		if err != nil {
+			var protocol *ProtocolError
+			if errors.As(err, &protocol) {
+				return protocol
+			}
+			return &ProtocolError{Code: "microk8s_unavailable", Message: "worker workspace assignment failed"}
+		}
+		response = AssignResponse{SchemaVersion: SchemaVersion, Operation: "assign", ClusterID: req.ClusterID, NodeName: req.ExpectedNodeName, NodeUID: req.NodeUID, WorkspaceID: req.WorkspaceID, Assigned: assigned}
 		return nil
 	})
 	return response, err

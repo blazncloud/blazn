@@ -38,7 +38,7 @@ if ! { [ -d "$transaction" ] && [ ! -L "$transaction" ] && [ "$(stat -c '%u:%a' 
 sealed=$transaction/boundary.yaml
 if [ -L "$sealed" ] || [ ! -f "$sealed" ] || [ "$(stat -c '%u:%a:%h' "$sealed")" != 0:400:1 ]; then printf 'sealed boundary manifest is unsafe\n' >&2; exit 1; fi
 [ "$(sha256sum "$sealed" | awk '{print $1}')" = "$BLAZN_EXPECTED_BOUNDARY_SHA256" ] || { printf 'sealed boundary manifest digest mismatch\n' >&2; exit 1; }
-[ "$(grep -c "blazn.dev/phase5-transaction: $BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -ge 8 ] || { printf 'sealed manifest does not carry this transaction identity\n' >&2; exit 1; }
+[ "$(grep -c "blazn.dev/phase5-transaction: $BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -ge 9 ] || { printf 'sealed manifest does not carry this transaction identity\n' >&2; exit 1; }
 phase=$(cat "$transaction/phase")
 case "$phase" in
   complete) printf 'Phase 5 boundary transaction is already complete\n'; exit 0 ;;
@@ -50,7 +50,7 @@ esac
 server_minor=$(kubectl version -o json | jq -er '.serverVersion.minor | gsub("[^0-9]"; "")')
 server_major=$(kubectl version -o json | jq -er '.serverVersion.major | gsub("[^0-9]"; "")')
 if [ "$server_major" -lt 1 ] || { [ "$server_major" -eq 1 ] && [ "$server_minor" -lt 30 ]; }; then printf 'the boundary admission policy requires Kubernetes 1.30 or newer\n' >&2; exit 1; fi
-queue_name=$(awk '/clusterQueue:/ {print $2}' "$sealed")
+queue_name=$(awk '/clusterQueue:/ && $2 != "blazn-sandboxes" {print $2}' "$sealed")
 cluster_queue_active=$(kubectl get clusterqueue.kueue.x-k8s.io "$queue_name" -o jsonpath='{.status.conditions[?(@.type=="Active")].status}')
 [ "$cluster_queue_active" = True ] || { printf 'reviewed ClusterQueue %s is not Active\n' "$queue_name" >&2; exit 1; }
 localqueue_served=$(kubectl get crd localqueues.kueue.x-k8s.io -o json | jq -er '[.spec.versions[] | select(.name=="v1beta1" and .served==true)] | length')
@@ -81,6 +81,7 @@ uids=$transaction/owned-uids.json
   printf '"namespace/blazn-poc-sandboxes":"%s",' "$(owned_uid namespace blazn-poc-sandboxes)"
   printf '"serviceaccount/blazn-sandbox-runner":"%s",' "$(owned_uid serviceaccount blazn-sandbox-runner blazn-poc-sandboxes)"
   printf '"localqueue/blazn-poc":"%s",' "$(owned_uid localqueue.kueue.x-k8s.io blazn-poc blazn-poc-sandboxes)"
+  printf '"localqueue/blazn-sandboxes":"%s",' "$(owned_uid localqueue.kueue.x-k8s.io blazn-sandboxes blazn-poc-sandboxes)"
   printf '"role/blazn-agent-sandbox-controller":"%s",' "$(owned_uid role blazn-agent-sandbox-controller blazn-poc-sandboxes)"
   printf '"rolebinding/blazn-agent-sandbox-controller":"%s",' "$(owned_uid rolebinding blazn-agent-sandbox-controller blazn-poc-sandboxes)"
   printf '"validatingadmissionpolicy/blazn-sandbox-boundary":"%s",' "$(owned_uid validatingadmissionpolicy blazn-sandbox-boundary)"
@@ -93,6 +94,7 @@ chmod 0600 "$uids"
 
 [ "$(kubectl get serviceaccount blazn-sandbox-runner -n blazn-poc-sandboxes -o jsonpath='{.automountServiceAccountToken}')" = false ] || { printf 'runner ServiceAccount is not tokenless\n' >&2; exit 1; }
 [ "$(kubectl get localqueue.kueue.x-k8s.io blazn-poc -n blazn-poc-sandboxes -o jsonpath='{.spec.clusterQueue}')" = "$queue_name" ] || { printf 'LocalQueue does not target the reviewed ClusterQueue\n' >&2; exit 1; }
+[ "$(kubectl get localqueue.kueue.x-k8s.io blazn-sandboxes -n blazn-poc-sandboxes -o jsonpath='{.spec.clusterQueue}')" = blazn-sandboxes ] || { printf 'dedicated LocalQueue does not target the Blazn ClusterQueue\n' >&2; exit 1; }
 attempt=0
 until [ "$(kubectl get localqueue.kueue.x-k8s.io blazn-poc -n blazn-poc-sandboxes -o jsonpath='{.status.conditions[?(@.type=="Active")].status}')" = True ]; do
   attempt=$((attempt + 1))

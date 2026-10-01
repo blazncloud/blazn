@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import type {
   IssuedWorkerCredential,
   RetiredWorkerRequest,
+  WorkerAssignmentRequest,
   WorkerJoinObservation,
   WorkerJoinObservationRequest,
   WorkerCredentialIssueRequest,
@@ -101,6 +102,17 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
     return { deleted: response.deleted };
   }
 
+  async assign(request: WorkerAssignmentRequest, signal: AbortSignal): Promise<{ assigned: boolean }> {
+    const response = object(await this.call({ schemaVersion, operation: "assign", ...request }, signal));
+    exactKeys(response, ["schemaVersion", "operation", "clusterId", "nodeName", "nodeUid", "workspaceId", "assigned"]);
+    if (response.schemaVersion !== schemaVersion || response.operation !== "assign" || response.clusterId !== request.clusterId ||
+        response.nodeName !== request.expectedNodeName || response.nodeUid !== request.nodeUid || response.workspaceId !== request.workspaceId ||
+        typeof response.assigned !== "boolean") {
+      throw new Error("MicroK8s worker issuer returned an invalid response");
+    }
+    return { assigned: response.assigned };
+  }
+
   async health(signal: AbortSignal): Promise<void> {
     const response = object(await this.call(undefined, signal, "GET", "/healthz"));
     exactKeys(response, ["schemaVersion", "operation", "healthy"]);
@@ -125,7 +137,7 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
             if (res.statusCode !== 200) {
               const error = object(parsed);
               exactKeys(error, ["schemaVersion", "operation", "code", "message"]);
-              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "observation_unavailable", "observation_rejected", "retire_rejected", "deadline_exceeded", "internal_error"]);
+              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "observation_unavailable", "observation_rejected", "retire_rejected", "assign_rejected", "deadline_exceeded", "internal_error"]);
               if (error.schemaVersion !== schemaVersion || error.operation !== "error" || typeof error.code !== "string" || !codes.has(error.code) || typeof error.message !== "string" || error.message.length < 1 || error.message.length > 256) {
                 throw new Error("MicroK8s worker issuer returned an invalid error response");
               }

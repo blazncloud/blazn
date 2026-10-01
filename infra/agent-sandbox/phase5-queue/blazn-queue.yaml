@@ -1,0 +1,42 @@
+# Dedicated Kueue capacity for Blazn sandboxes. The flavor selects only nodes
+# that activation marked sandbox-eligible, so sandbox Pods never inherit the
+# shared m1-light flavor's frontro.io/agent-workloads selector. The flavor
+# deliberately declares no tolerations: sandbox Pods already carry exactly the
+# blazn.dev/sandbox-node toleration, and an injected duplicate would fail the
+# controller's observed-Pod check. No cohort: this queue neither borrows from
+# nor lends to Frontro's queues.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: blazn-sandbox
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+spec:
+  nodeLabels:
+    blazn.dev/sandbox-eligible: "true"
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: blazn-sandboxes
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: blazn-poc-sandboxes
+  queueingStrategy: BestEffortFIFO
+  preemption:
+    withinClusterQueue: Never
+    reclaimWithinCohort: Never
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "ephemeral-storage"]
+      flavors:
+        - name: blazn-sandbox
+          resources:
+            - name: cpu
+              nominalQuota: "32"
+            - name: memory
+              nominalQuota: 64Gi
+            - name: ephemeral-storage
+              nominalQuota: 160Gi
