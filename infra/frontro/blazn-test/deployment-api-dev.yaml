@@ -4,6 +4,7 @@ metadata:
   name: api-dev
   namespace: blazn-test
 spec:
+  minReadySeconds: 5
   progressDeadlineSeconds: 600
   replicas: 1
   revisionHistoryLimit: 10
@@ -11,7 +12,10 @@ spec:
     matchLabels:
       app: blazn-api-dev
   strategy:
-    type: Recreate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
   template:
     metadata:
       labels:
@@ -82,6 +86,10 @@ spec:
           value: blazn.invalid
         image: registry.blazn-test.internal/blazn/control-api@sha256:7c089aad35543b5c85d4337db50003ab97d6534ba5dbc7e1ed9ac2495350f16a
         imagePullPolicy: Always
+        lifecycle:
+          preStop:
+            sleep:
+              seconds: 8
         livenessProbe:
           failureThreshold: 6
           httpGet:
@@ -228,6 +236,10 @@ spec:
         - daemon off;
         image: nginxinc/nginx-unprivileged@sha256:9f1d635195267228edfdad0bbaacf390031785924f10f8449ff9c934ff765290
         imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            sleep:
+              seconds: 8
         name: proxy
         ports:
         - containerPort: 8081

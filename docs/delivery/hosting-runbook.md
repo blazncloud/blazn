@@ -96,8 +96,14 @@ infra/frontro/deploy-api.sh --migrate
 This builds `services/control-api` on the build host, applies migrations with
 the migration role, pushes the image to the in-cluster registry, sets the new
 digest on `deployment/api-dev`, waits for the rollout and checks `/healthz`.
-The deployment uses the `Recreate` strategy, so expect a few seconds of
-downtime. Afterwards record the new digest:
+The deployment rolls: the new pod must pass its readiness check before the old
+one is stopped (`maxSurge: 1`, `maxUnavailable: 0`), and the old pod keeps
+serving for a few seconds after it is told to stop, so a deploy does not
+interrupt requests. Both pods run for a short time; the namespace quota has
+room for one extra pod. An Agent Run that the old pod was driving is claimed by
+the new pod once its lease expires (about 90 seconds); recovery of a Run in
+flight is not qualified yet (plan item M6.4).
+Afterwards record the new digest:
 
 ```sh
 KUBECTL="ssh ben1 sudo -n microk8s kubectl" infra/frontro/export.py
