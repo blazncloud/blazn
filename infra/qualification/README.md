@@ -42,11 +42,16 @@ sandbox ID (read-only `kubectl`), and no access grant still `active`
 
 ```sh
 python3 infra/qualification/sandbox-lifecycle.py \
-  --workspace WORKSPACE_ID --template NAME@VERSION \
+  --workspace WORKSPACE_ID --template NAME@VERSION --source REPOSITORY=COMMIT \
   --ssh "-J ben1 blazn@NODE_ADDRESS" --blazn .local/bin/blazn \
   --psql "ssh DATABASE_HOST sudo -n -u postgres psql -d blazn_test -At" \
   --repeat 2 > report.json
 ```
+
+The test file is written into the first `--source` checkout
+(`/workspace/src/REPOSITORY/`), because transfers need a mounted workspace
+volume; pass `--remote-path` to use another one. The grant query is sent to the
+`--psql` command on standard input, so an `ssh` prefix works as written.
 
 Omit `--ssh` to use a CLI on the local machine. The report lists every step
 per iteration and the node each sandbox ran on. A failed run stops and deletes

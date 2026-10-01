@@ -41,6 +41,9 @@ if command == "exec":
 if command in ("upload", "download"):
     src, dst = rest[1], rest[2]
     stored = state / (i + ".file")
+    remote = dst if command == "upload" else src
+    if not remote.startswith("/workspace/src/blazn/"):
+        out({"error": {"code": "sandbox_upload_failed", "message": "path is not on a mounted volume"}}, 1)
     if command == "upload": shutil.copyfile(src, stored)
     else: shutil.copyfile(stored, dst)
     out({"sandboxId": i, "sha256": hashlib.sha256(stored.read_bytes()).hexdigest(), "size": stored.stat().st_size})
@@ -60,12 +63,19 @@ if args[args.index("-o") + 1] == "json":
 elif alive:
     print("pod/" + sandbox)
 PY
-printf '#!/bin/sh\nprintf "%%s\\n" "${FAKE_ACTIVE_GRANTS:-0}"\n' >"$tmp/psql"
+# The fake database accepts the query only on stdin and only as one argument-free
+# invocation, which is what survives an ssh prefix.
+cat >"$tmp/psql" <<'SH'
+#!/bin/sh
+[ "$#" -eq 0 ] || { echo "unexpected psql arguments: $*" >&2; exit 2; }
+grep -q "from sandbox_access_grants where sandbox_id = '.*' and state = 'active'" || { echo "unexpected query" >&2; exit 2; }
+printf '%s\n' "${FAKE_ACTIVE_GRANTS:-0}"
+SH
 chmod +x "$tmp/blazn" "$tmp/kubectl" "$tmp/psql"
 
 run() {
   FAKE_STATE="$tmp/state" python3 "$ROOT/sandbox-lifecycle.py" --workspace 11111111-1111-4111-8111-111111111111 \
-    --template coding-agent@1 --blazn "$tmp/blazn" --kubectl "$tmp/kubectl" --psql "$tmp/psql" --scratch "$tmp/scratch" \
+    --template coding-agent@1 --source blazn=0123456789abcdef0123456789abcdef01234567 --blazn "$tmp/blazn" --kubectl "$tmp/kubectl" --psql "$tmp/psql" --scratch "$tmp/scratch" \
     --poll 0 --residue-timeout 1 "$@"
 }
 
@@ -83,6 +93,8 @@ if (export FAKE_ACTIVE_GRANTS=1; run >"$tmp/grant.json" 2>/dev/null); then print
 grep -q '"no active access grant remains"' "$tmp/grant.json"
 if (export FAKE_LEAK=1; run >"$tmp/leak.json" 2>/dev/null); then printf 'a leftover Pod was not detected\n' >&2; exit 1; fi
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert not r["passed"] and r["steps"][-1]["step"]=="no Pod or Sandbox object remains", r["steps"][-1]' "$tmp/leak.json"
+if run --remote-path /workspace/tmp/file >"$tmp/path.json" 2>/dev/null; then printf 'an unmounted transfer path was not detected\n' >&2; exit 1; fi
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert not r["passed"] and r["steps"][-1]["step"]=="upload", r["steps"][-1]' "$tmp/path.json"
 if run --psql "" >/dev/null 2>&1; then printf 'a missing grant check was silently accepted\n' >&2; exit 1; fi
 run --psql "" --skip-grant-check >"$tmp/skip.json" 2>"$tmp/skip.err" || { cat "$tmp/skip.err" >&2; exit 1; }
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["passed"] and r["skipped"]==["no active access grant remains"], r' "$tmp/skip.json"

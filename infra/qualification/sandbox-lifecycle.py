@@ -13,7 +13,12 @@ workspace. It runs locally, or on another host with --ssh. Cluster and database
 checks are read-only.
 
     sandbox-lifecycle.py --workspace WORKSPACE --template NAME@VERSION \\
-        --ssh "-J ben1 blazn@NODE" --blazn .local/bin/blazn --repeat 2 > report.json
+        --source REPOSITORY=COMMIT --ssh "-J ben1 blazn@NODE" --blazn .local/bin/blazn \\
+        --psql "ssh DATABASE_HOST sudo -n -u postgres psql -d blazn_test -At" --repeat 2 > report.json
+
+The test file is written into the first --source checkout unless --remote-path
+names another mounted workspace path. The grant query is sent to --psql on
+standard input.
 
 Progress goes to stderr; the JSON report goes to stdout. No token, grant or
 file content is printed.
@@ -66,7 +71,9 @@ class Runner:
 
     def active_grants(self, sandbox_id):
         query = f"select count(*) from sandbox_access_grants where sandbox_id = '{sandbox_id}' and state = 'active'"
-        result = subprocess.run([*self.psql, "-c", query], capture_output=True, text=True, timeout=60)
+        # The query goes on stdin: a --psql prefix that runs over ssh would
+        # re-split a -c argument in the remote shell and break on its parentheses.
+        result = subprocess.run(self.psql, input=query + ";\n", capture_output=True, text=True, timeout=60)
         if result.returncode or not result.stdout.strip().isdigit():
             raise StepFailed(f"grant query failed: {result.stderr.strip()[-200:]}")
         return int(result.stdout.strip())
@@ -199,7 +206,7 @@ def main():
     parser.add_argument("--psql", default=os.environ.get("BLAZN_QUAL_PSQL", ""), help="command prefix for a read-only psql on the hosted database (psql -At ...)")
     parser.add_argument("--skip-grant-check", action="store_true", help="allow running without --psql; the report marks the check as skipped")
     parser.add_argument("--exec-command", default="uname -sm")
-    parser.add_argument("--remote-path", default="/workspace/tmp/blazn-qualification.bin")
+    parser.add_argument("--remote-path", default="", help="file path inside the sandbox; defaults to a file in the first --source checkout (/workspace/src/REPOSITORY/)")
     parser.add_argument("--size", type=int, default=65536)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--ready-timeout", type=int, default=600)
@@ -210,6 +217,12 @@ def main():
     options = parser.parse_args()
     if not options.psql and not options.skip_grant_check:
         parser.error("--psql is required (or pass --skip-grant-check)")
+    if not options.remote_path:
+        # Transfers need a mounted workspace volume. A source checkout is one;
+        # /workspace/tmp is accepted by the CLI but is not mounted by templates.
+        if not options.source:
+            parser.error("--remote-path is required when no --source is given")
+        options.remote_path = f"/workspace/src/{options.source[0].split('=', 1)[0]}/.blazn-qualification.bin"
     if options.repeat < 1 or options.size < 1:
         parser.error("--repeat and --size must be positive")
 
