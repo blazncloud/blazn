@@ -50,7 +50,9 @@ ssh "$BUILD_HOST" "mkdir -p $remote"
 rsync -a --delete --exclude node_modules --exclude dist "$ROOT/services/control-api/" "$BUILD_HOST:$remote/control-api/"
 rsync -a --delete "$ROOT/infra/frontro/scripts/" "$BUILD_HOST:$remote/scripts/"
 # The Agent Run controller ships the in-Sandbox harness for both architectures.
-rsync -a --delete "$ROOT/go.mod" "$ROOT/go.sum" "$BUILD_HOST:$remote/agent-src/"
+# shellcheck disable=SC2029
+ssh "$BUILD_HOST" "mkdir -p $remote/agent-src/cmd/blazn-agent $remote/agent-src/internal/sandboxagent"
+rsync -a "$ROOT/go.mod" "$ROOT/go.sum" "$BUILD_HOST:$remote/agent-src/"
 rsync -a --delete "$ROOT/cmd/blazn-agent/" "$BUILD_HOST:$remote/agent-src/cmd/blazn-agent/"
 rsync -a --delete "$ROOT/internal/sandboxagent/" "$BUILD_HOST:$remote/agent-src/internal/sandboxagent/"
 # shellcheck disable=SC2029
