@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -30,6 +31,7 @@ type agentHarnessCommands interface {
 	ListProfiles(context.Context, string) (client.HarnessProfileList, error)
 	GetProfile(context.Context, string) (client.HarnessProfileEnvelope, error)
 	ReviseProfile(context.Context, string, string, int, client.JSONDocument) (client.HarnessProfileEnvelope, error)
+	Quickstart(context.Context, agentharnesspkg.QuickstartOptions) (agentharnesspkg.QuickstartResult, error)
 }
 
 type agentHarnessInputError struct{ err error }
@@ -117,6 +119,38 @@ func (a *App) runAgent(format OutputFormat, args []string) int {
 		}
 		r, e := c.GetAgentVersion(ctx, p[0], p[1])
 		return a.ahOutput(format, r, e)
+	case "quickstart":
+		usage := "agent quickstart requires NAME, --template NAME@VERSION, --repository URL, --commit SHA, --route ROUTE_ID, --request-id KEY, and --instructions TEXT or --instructions-file FILE"
+		p, f, _, e := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"template": false, "repository": false, "commit": false, "route": false, "route-version": true,
+			"instructions": true, "instructions-file": true, "purpose": true, "request-id": false})
+		if e != nil || f["template"] == "" || f["repository"] == "" || f["commit"] == "" || f["route"] == "" || f["request-id"] == "" || (f["instructions"] == "") == (f["instructions-file"] == "") {
+			return a.ahUsage(format, usage)
+		}
+		instructions := f["instructions"]
+		if f["instructions-file"] != "" {
+			data, readErr := os.ReadFile(f["instructions-file"])
+			if readErr != nil {
+				return a.writeAgentHarnessInputError(format, errors.New("the instructions file could not be read"))
+			}
+			instructions = strings.TrimSpace(string(data))
+		}
+		routeVersion := 1
+		if f["route-version"] != "" {
+			if routeVersion, e = strconv.Atoi(f["route-version"]); e != nil {
+				return a.ahUsage(format, usage)
+			}
+		}
+		r, e := c.Quickstart(ctx, agentharnesspkg.QuickstartOptions{Name: p[0], Template: f["template"], Repository: f["repository"], Commit: f["commit"], Instructions: instructions,
+			Purpose: f["purpose"], ModelRouteID: f["route"], ModelRouteVersion: routeVersion, RequestID: f["request-id"], HarnessCommit: a.build.Commit})
+		if e != nil {
+			return a.writeAgentHarnessError(format, e)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(r)
+		}
+		fmt.Fprintf(a.stdout, "agent %s version %d is ready\n  agent version:   %s\n  harness profile: %s\n\nStart a run with:\n  blazn run create --agent-version %s --harness-profile %s --request-id run-$(date +%%s)\n",
+			p[0], r.AgentVersion, r.AgentVersionID, r.HarnessProfileID, r.AgentVersionID, r.HarnessProfileID)
+		return ExitSuccess
 	case "publish":
 		p, f, d, e := fileDocument(args[1:], 1, map[string]bool{"request-id": false})
 		if e != nil {
