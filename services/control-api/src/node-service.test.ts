@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, sign, verify } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { canonicalJson, enrollmentToken, nodeInstallReceiptDigest, publicKeyFingerprint, renderedDigest, requestDigest, sha256Hex } from "./node-crypto.js";
+import { canonicalJson, enrollmentToken, FileNodePlanSigner, nodeInstallReceiptDigest, publicKeyFingerprint, renderedDigest, requestDigest, sha256Hex } from "./node-crypto.js";
 import { NodeService, type HeartbeatInput } from "./node-service.js";
 import type { NodeIdempotencyReceipt, NodeStore, NodeTransaction } from "./node-store.js";
 import { NodeHttpError } from "./node-types.js";
@@ -145,4 +148,39 @@ test("retirement requires the node's signed removal receipt succeeding its activ
   current=undefined;await expectCode(valid.request,valid.proof,"identity_rejected");
   replay={requestDigest:"not-this-request"};await expectCode(valid.request,valid.proof,"idempotency_conflict");
   captured=undefined;replay={requestDigest:requestDigest(valid.request)};assert.equal((await service.retire(valid.request,"retire-other",valid.proof)).lifecycleState,"removed");assert.equal(captured,undefined);
+});
+
+test("pause, quarantine and resume complete with a verifiable control-plane receipt",async()=>{
+  const directory=await mkdtemp(path.join(tmpdir(),"node-receipt-"));const keyFile=path.join(directory,"plan.key");
+  await writeFile(keyFile,generateKeyPairSync("ed25519").privateKey.export({format:"pem",type:"pkcs8"}));
+  const signer=new FileNodePlanSigner("plan/v1",keyFile),signerKey=await signer.publicKey();
+  const factory={signingKey:async()=>signerKey,create:planFactory.create,signActivationGrant:planFactory.signActivationGrant,signOperationReceipt:(unsigned:Record<string,unknown>)=>signer.signOperationReceipt(unsigned)};
+  let lifecycle:"active"|"paused"|"quarantined"="active",version=4;const transitions:string[]=[];let completed:Parameters<NodeTransaction["completeControlPlaneOperation"]>[0]|undefined;
+  const binding={clusterId:"cluster-a",nodeName:"ben2",nodeUid:"uid-a",resourceVersion:"9"};
+  const node=()=>({id:nodeId,workspaceId,name:"ben2",kind:"shared" as const,platform:"linux" as const,architecture:"amd64" as const,lifecycleState:lifecycle,trustState:"verified" as const,agentEligible:lifecycle==="active",version,capabilityVersion:1,identity:null,kubernetesBinding:binding,createdAt:"2026-08-22T00:00:00Z",updatedAt:"2026-08-22T00:00:00Z"});
+  const tx=baseTx({nodeById:async()=>node(),authority:async()=>({workspaceId,role:"operator",workspaceStatus:"active"}),
+    insertOperation:async v=>({id:v.id,nodeId:v.nodeId,type:v.type,status:"pending",expectedNodeVersion:v.expectedVersion,result:null,error:null,receipt:null,createdAt:"2026-08-22T12:00:00Z"}),
+    transitionLifecycle:async input=>{if(input.expectedVersion!==version||!input.from.includes(lifecycle))return false;transitions.push(`${lifecycle}->${input.to}`);lifecycle=input.to;version++;return true;},
+    completeControlPlaneOperation:async input=>{completed=input;return{id:input.operationId,nodeId:input.nodeId,type:input.type,status:"succeeded",expectedNodeVersion:Number(input.receipt.expectedNodeVersion),result:input.result,error:null,receipt:input.receipt,createdAt:"2026-08-22T12:00:00Z"};}});
+  const service=new NodeService(store(tx),async()=>Buffer.alloc(32),factory);
+  await assert.rejects(()=>service.createOperation(principal,nodeId,"resume-active",{type:"resume",expectedVersion:4,parameters:{}}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="state_conflict");
+  const paused=await service.createOperation(principal,nodeId,"pause-key-1",{type:"pause",expectedVersion:4,parameters:{}});
+  assert.equal(paused.status,"succeeded");assert.deepEqual(paused.result,{lifecycleState:"paused"});
+  const receipt=completed!.receipt;
+  assert.equal(receipt.signerKind,"control_plane");assert.equal(receipt.identityGeneration,null);assert.equal(receipt.outcome,"succeeded");
+  assert.equal(receipt.signingKeyId,"plan/v1");assert.equal(receipt.signerFingerprint,signerKey.fingerprint);assert.equal(receipt.operationType,"pause");assert.equal(receipt.expectedNodeVersion,4);
+  assert.deepEqual(receipt.actions,[{ordinal:1,kind:"api",target:"node.lifecycleState=paused",outcome:"applied"}]);assert.deepEqual(receipt.residues,[]);
+  // Verified exactly as the node client does: digest over every field but
+  // digest and signature, Ed25519 over the operation-receipt domain.
+  const unsigned={...receipt};delete unsigned.digest;delete unsigned.signature;
+  assert.equal(receipt.digest,`sha256:${sha256Hex(canonicalJson(unsigned))}`);
+  const publicKey={key:{kty:"OKP",crv:"Ed25519",x:signerKey.publicKey},format:"jwk" as const};
+  assert.equal(verify(null,Buffer.from(`blazn-node-operation-receipt-v1\n${String(receipt.digest)}`),publicKey,Buffer.from(String(receipt.signature),"base64url")),true);
+  assert.equal(verify(null,Buffer.from(`blazn-node-install-plan-v1\n${String(receipt.digest)}`),publicKey,Buffer.from(String(receipt.signature),"base64url")),false);
+  await assert.rejects(()=>service.createOperation(principal,nodeId,"pause-again",{type:"pause",expectedVersion:5,parameters:{}}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="state_conflict");
+  await service.createOperation(principal,nodeId,"quarantine-1",{type:"quarantine",expectedVersion:5,parameters:{}});
+  await assert.rejects(()=>service.createOperation(principal,nodeId,"resume-stale",{type:"resume",expectedVersion:5,parameters:{}}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="version_conflict");
+  await service.createOperation(principal,nodeId,"resume-key-1",{type:"resume",expectedVersion:6,parameters:{}});
+  assert.deepEqual(transitions,["active->paused","paused->quarantined","quarantined->active"]);
+  await assert.rejects(()=>service.createOperation(principal,nodeId,"pause-param",{type:"pause",expectedVersion:7,parameters:{reason:"x"}}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="invalid_request");
 });

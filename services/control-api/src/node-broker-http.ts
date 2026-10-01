@@ -33,6 +33,16 @@ export function createNodeBrokerServer(service: NodeBrokerService, options: Node
         const assigned = await service.assignNode({ clusterId: text(body.clusterId, "clusterId", 128), nodeName: text(body.nodeName, "nodeName", 253), nodeUid: text(body.nodeUid, "nodeUid", 128), workspaceId: text(body.workspaceId, "workspaceId", 64) });
         return send(response, 200, { assigned });
       }
+      if (request.url === "/v1/node-service/node-placement-holds") {
+        if (request.method !== "POST") throw new NodeHttpError("method_not_allowed", "method is not allowed for this route");
+        if (request.headers.authorization !== undefined) throw new NodeHttpError("unauthorized", "user and management credentials are not accepted by the Node broker");
+        const body = await jsonBody(request);
+        exact(body, ["clusterId", "nodeName", "nodeUid", "holdReason"]);
+        // An empty reason releases the hold, so it is checked here rather than by text().
+        if (typeof body.holdReason !== "string" || body.holdReason.length > 16) throw new NodeHttpError("invalid_request", "holdReason is invalid");
+        const changed = await service.holdNode({ clusterId: text(body.clusterId, "clusterId", 128), nodeName: text(body.nodeName, "nodeName", 253), nodeUid: text(body.nodeUid, "nodeUid", 128), holdReason: body.holdReason });
+        return send(response, 200, { changed });
+      }
       if (request.url === "/v1/node-service/node-retirements") {
         if (request.method !== "POST") throw new NodeHttpError("method_not_allowed", "method is not allowed for this route");
         if (request.headers.authorization !== undefined) throw new NodeHttpError("unauthorized", "user and management credentials are not accepted by the Node broker");

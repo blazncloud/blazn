@@ -12,6 +12,7 @@ export interface NodePlanFactory {
   signingKey(): Promise<NodePlanSigningKey>;
   create(context: NodePlanContext): Promise<Record<string, unknown>>;
   signActivationGrant?(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>>;
+  signOperationReceipt?(unsignedReceipt: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 export class TemplateNodePlanFactory implements NodePlanFactory {
@@ -19,6 +20,10 @@ export class TemplateNodePlanFactory implements NodePlanFactory {
 
   signingKey(): Promise<NodePlanSigningKey> { return this.signer.publicKey(); }
   signActivationGrant(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>> { return this.signer.signActivationGrant(unsignedGrant); }
+  signOperationReceipt(unsignedReceipt: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.signer.signOperationReceipt) throw new Error("node operation receipt signer is unavailable");
+    return this.signer.signOperationReceipt(unsignedReceipt);
+  }
 
   async create(context: NodePlanContext): Promise<Record<string, unknown>> {
     const parsed: unknown = JSON.parse(await readFile(this.templateFile, "utf8"));

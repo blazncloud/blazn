@@ -152,10 +152,8 @@ func (b *MicroK8sBackend) Observe(ctx context.Context, expectedName string) (Nod
 		return NodeObservation{}, fmt.Errorf("MicroK8s returned an invalid Node observation")
 	}
 	workerOnly := true
-	for key := range node.Metadata.Labels {
-		if key == "node-role.kubernetes.io/control-plane" || key == "node-role.kubernetes.io/master" {
-			workerOnly = false
-		}
+	if isControlPlaneNode(node.Metadata.Labels) {
+		workerOnly = false
 	}
 	bootstrapCount := 0
 	for _, taint := range node.Spec.Taints {
@@ -204,8 +202,7 @@ func (b *MicroK8sBackend) Retire(ctx context.Context, name, uid string) (bool, e
 	if node.Metadata.UID != uid {
 		return false, &ProtocolError{Code: "binding_conflict", Message: "Node UID differs from the retired binding"}
 	}
-	_, controlPlane := node.Metadata.Labels["node-role.kubernetes.io/control-plane"]
-	_, master := node.Metadata.Labels["node-role.kubernetes.io/master"]
+	controlPlane := isControlPlaneNode(node.Metadata.Labels)
 	retired, blazn := false, node.Metadata.Labels["blazn.dev/node"] == "true"
 	for _, taint := range node.Spec.Taints {
 		if taint.Key == "blazn.dev/retired" && taint.Effect == "NoExecute" {
@@ -215,13 +212,26 @@ func (b *MicroK8sBackend) Retire(ctx context.Context, name, uid string) (bool, e
 			blazn = true
 		}
 	}
-	if !blazn || controlPlane || master || !retired {
+	if !blazn || controlPlane || !retired {
 		return false, &ProtocolError{Code: "retire_rejected", Message: "Node is not a Blazn worker that has left the cluster"}
 	}
 	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"delete", "node", name, "--wait=false"}); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// isControlPlaneNode reports whether a Node is a control-plane or datastore
+// member. MicroK8s marks its control-plane hosts with
+// node.kubernetes.io/microk8s-controlplane and sets no node-role labels, so
+// all three markers are checked. The issuer never mutates such a Node.
+func isControlPlaneNode(labels map[string]string) bool {
+	for _, key := range []string{"node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master", "node.kubernetes.io/microk8s-controlplane"} {
+		if _, present := labels[key]; present {
+			return true
+		}
+	}
+	return false
 }
 
 // WorkspaceNodeLabel binds a Blazn node to its workspace. Kubelets cannot set
@@ -258,8 +268,7 @@ func (b *MicroK8sBackend) Assign(ctx context.Context, name, uid, workspaceID str
 	if node.Metadata.UID != uid {
 		return false, &ProtocolError{Code: "binding_conflict", Message: "Node UID differs from the activated binding"}
 	}
-	_, controlPlane := node.Metadata.Labels["node-role.kubernetes.io/control-plane"]
-	_, master := node.Metadata.Labels["node-role.kubernetes.io/master"]
+	controlPlane := isControlPlaneNode(node.Metadata.Labels)
 	blazn := node.Metadata.Labels["blazn.dev/node"] == "true"
 	for _, taint := range node.Spec.Taints {
 		if taint.Key == "blazn.dev/sandbox-node" && taint.Value == "true" && taint.Effect == "NoSchedule" {
@@ -269,7 +278,7 @@ func (b *MicroK8sBackend) Assign(ctx context.Context, name, uid, workspaceID str
 			return false, &ProtocolError{Code: "assign_rejected", Message: "retired Node cannot be assigned"}
 		}
 	}
-	if !blazn || controlPlane || master {
+	if !blazn || controlPlane {
 		return false, &ProtocolError{Code: "assign_rejected", Message: "Node is not a Blazn worker"}
 	}
 	if current, present := node.Metadata.Labels[WorkspaceNodeLabel]; present {
@@ -279,6 +288,81 @@ func (b *MicroK8sBackend) Assign(ctx context.Context, name, uid, workspaceID str
 		return false, &ProtocolError{Code: "binding_conflict", Message: "Node is bound to a different workspace"}
 	}
 	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"label", "node", name, WorkspaceNodeLabel + "=" + workspaceID, "--resource-version=" + node.Metadata.ResourceVersion}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// PlacementHoldTaint keeps new sandboxes off a Blazn node that is paused,
+// quarantined, draining, or offline. Sandbox Pods may tolerate only the
+// sandbox-node taint, so no sandbox can tolerate this one.
+const PlacementHoldTaint = "blazn.dev/placement-hold"
+
+// PlacementHoldReasons are the node states that hold placement.
+var PlacementHoldReasons = map[string]bool{"paused": true, "quarantined": true, "draining": true, "offline": true}
+
+// Hold sets the placement-hold taint on a Blazn worker's Node to reason, or
+// removes it when reason is empty. It returns false when the Node already
+// matches. The patch is preconditioned on the observed resourceVersion and
+// keeps every other taint exactly as it was.
+func (b *MicroK8sBackend) Hold(ctx context.Context, name, uid, reason string) (bool, error) {
+	if err := b.validateConfiguration(); err != nil {
+		return false, err
+	}
+	if !namePattern.MatchString(name) || !uuidPattern.MatchString(uid) || reason != "" && !PlacementHoldReasons[reason] {
+		return false, fmt.Errorf("worker placement hold is invalid")
+	}
+	out, err := b.Runner.Run(ctx, b.KubectlPath, []string{"get", "node", name, "-o", "json"})
+	if err != nil {
+		return false, err
+	}
+	var node struct {
+		Metadata struct {
+			Name, UID, ResourceVersion string
+			Labels                     map[string]string
+		} `json:"metadata"`
+		Spec struct {
+			Taints []map[string]any `json:"taints"`
+		} `json:"spec"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&node); err != nil || node.Metadata.Name != name || node.Metadata.ResourceVersion == "" {
+		return false, fmt.Errorf("MicroK8s returned an invalid Node observation")
+	}
+	if node.Metadata.UID != uid {
+		return false, &ProtocolError{Code: "binding_conflict", Message: "Node UID differs from the activated binding"}
+	}
+	controlPlane := isControlPlaneNode(node.Metadata.Labels)
+	blazn := node.Metadata.Labels["blazn.dev/node"] == "true"
+	current := ""
+	taints := make([]map[string]any, 0, len(node.Spec.Taints)+1)
+	for _, taint := range node.Spec.Taints {
+		key, _ := taint["key"].(string)
+		if key == "blazn.dev/sandbox-node" && taint["value"] == "true" && taint["effect"] == "NoSchedule" {
+			blazn = true
+		}
+		if key == PlacementHoldTaint {
+			current, _ = taint["value"].(string)
+			continue
+		}
+		taints = append(taints, taint)
+	}
+	if !blazn || controlPlane {
+		return false, &ProtocolError{Code: "hold_rejected", Message: "Node is not a Blazn worker"}
+	}
+	if current == reason && (reason == "" || len(taints) == len(node.Spec.Taints)-1) {
+		return false, nil
+	}
+	if reason != "" {
+		taints = append(taints, map[string]any{"key": PlacementHoldTaint, "value": reason, "effect": "NoSchedule"})
+	}
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/metadata/resourceVersion", "value": node.Metadata.ResourceVersion},
+		{"op": "add", "path": "/spec/taints", "value": taints},
+	})
+	if err != nil {
+		return false, err
+	}
+	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"patch", "node", name, "--type=json", "-p", string(patch)}); err != nil {
 		return false, err
 	}
 	return true, nil

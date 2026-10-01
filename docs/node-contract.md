@@ -329,6 +329,15 @@ control-plane receipt key; that path cannot claim applied/restored host actions
 or ordinary success. Thus every terminal Operation has signed evidence even
 when the node cannot produce it.
 
+Pause, quarantine and resume are the exception: the control plane performs them
+itself. It moves the node's lifecycle state and completes the Operation with a
+`control_plane` receipt whose outcome may be `succeeded`, but whose actions are
+all `api` actions; it never claims a host action. A Node that is paused,
+quarantined, draining, or offline (its heartbeat lapsed) carries the taint
+`blazn.dev/placement-hold=<state>:NoSchedule`, set and cleared only through the
+MicroK8s worker issuer. Sandbox Pods may tolerate only the sandbox-node taint,
+so no new sandbox is scheduled there; sandboxes already running are not evicted.
+
 ## Acceptance evidence
 
 - Signed-plan valid/wrong-signer/expired/tampered/platform mismatch tests.

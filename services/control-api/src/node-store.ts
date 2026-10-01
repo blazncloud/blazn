@@ -11,6 +11,9 @@ export interface JoinConsumeReceipt { issuanceId: string; requestDigest: string 
 export interface RecoverableNode { nodeId: string; nextIdentityGeneration: number }
 export interface NodeRetirementAuthority { nodeId: string; workspaceId: string; lifecycleState: string; nodeVersion: number; generation: number | null; publicKey: string; publicKeyFingerprint: string; signingKeyId: string; planDigest: string; activeReceiptGeneration: number }
 
+export type PlacementHold = "paused" | "quarantined" | "draining" | "offline";
+export interface PlacementDrift { nodeId: string; workspaceId: string; clusterId: string; nodeName: string; nodeUid: string; applied: PlacementHold | null; desired: PlacementHold | null }
+
 export interface NodeTransaction {
   lockIdempotency(principalId: string, operation: string, key: string): Promise<void>;
   getIdempotency(principalId: string, operation: string, key: string): Promise<NodeIdempotencyReceipt | undefined>;
@@ -38,6 +41,10 @@ export interface NodeTransaction {
   recordHeartbeat(input: { nodeId: string; identityGeneration: number; bootId: string; sequence: number; sentAt: Date; capabilityDigest: string; requestDigest: string; capability: Record<string, unknown>; health: unknown; priorKubernetesResourceVersion: string; kubernetesBinding: KubernetesBinding }): Promise<void>;
   insertOperation(input: { id: string; workspaceId: string; nodeId: string; type: NodeOperationType; expectedVersion: number; requestedBy: string; idempotencyKey: string; requestDigest: string; parameters: Record<string, unknown> }): Promise<NodeOperationView>;
   listEvents(nodeId: string, afterId: string): Promise<NodeEvent[]>;
+  transitionLifecycle(input: { nodeId: string; expectedVersion: number; from: string[]; to: "active" | "paused" | "quarantined" }): Promise<boolean>;
+  completeControlPlaneOperation(input: { operationId: string; workspaceId: string; nodeId: string; type: NodeOperationType; receipt: Record<string, unknown>; result: Record<string, unknown> }): Promise<NodeOperationView>;
+  placementDrift(limit: number, nodeId?: string): Promise<PlacementDrift[]>;
+  recordPlacementHold(input: { nodeId: string; workspaceId: string; prior: PlacementHold | null; applied: PlacementHold | null }): Promise<boolean>;
   joinReplay(input: { issuanceId: string; nodeId: string; idempotencyKey: string; requestDigest: string }): Promise<NodeView | undefined>;
   consumeJoin(input: { issuanceId: string; nodeId: string; enrollmentId: string; planId: string; clusterId: string; nodeName: string; nodeUid: string; resourceVersion: string; idempotencyKey: string; requestDigest: string }): Promise<NodeView>;
 }
@@ -208,6 +215,43 @@ class PgNodeTransaction implements NodeTransaction {
       VALUES($1,$2,$3,$4,'pending',$5,$6,$7,$8,$9) RETURNING *`,[input.id,input.workspaceId,input.nodeId,input.type,input.expectedVersion,input.requestedBy,input.idempotencyKey,input.requestDigest,input.parameters]);
     await this.client.query("INSERT INTO node_operation_events(id,operation_id,sequence,type,payload) VALUES(gen_random_uuid(),$1,0,'operation.pending',$2)",[input.id,{type:input.type}]);
     return operationRow(result.rows[0]);
+  }
+  // transitionLifecycle moves a node between active, paused and quarantined.
+  // Only an active node keeps Agent eligibility, and resuming restores it
+  // only when the node's trust and identity still allow it.
+  async transitionLifecycle(input:{nodeId:string;expectedVersion:number;from:string[];to:"active"|"paused"|"quarantined"}):Promise<boolean>{
+    const result=await this.client.query(`UPDATE nodes SET lifecycle_state=$4,
+      agent_eligible=($4='active' AND trust_state='verified' AND current_identity_status='active' AND kubernetes_node_uid IS NOT NULL AND current_identity_generation IS NOT NULL),
+      version=version+1,updated_at=now() WHERE id=$1 AND version=$2 AND lifecycle_state=ANY($3::text[])`,[input.nodeId,input.expectedVersion,input.from,input.to]);
+    return result.rowCount===1;
+  }
+  // completeControlPlaneOperation records an operation the control plane
+  // performed itself, with its control-plane signed receipt.
+  async completeControlPlaneOperation(input:{operationId:string;workspaceId:string;nodeId:string;type:NodeOperationType;receipt:Record<string,unknown>;result:Record<string,unknown>}):Promise<NodeOperationView>{
+    const r=input.receipt,receiptId=String(r.receiptId);
+    await this.client.query(`INSERT INTO node_operation_receipts(id,operation_id,workspace_id,node_id,operation_type,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload)
+      VALUES($1,$2,$3,$4,$5,$6,'control_plane',NULL,$7,$8,$9,$10)`,[receiptId,input.operationId,input.workspaceId,input.nodeId,input.type,String(r.digest).slice(7),String(r.signerFingerprint).slice(7),r.signingKeyId,r.signature,r]);
+    const updated=await this.client.query(`UPDATE node_operations SET status='succeeded',result=$2,receipt_id=$3,started_at=$4,completed_at=$5 WHERE id=$1 AND status='pending' RETURNING *`,[input.operationId,input.result,receiptId,r.startedAt,r.completedAt]);
+    if(!updated.rowCount)throw Object.assign(new Error("node operation is no longer pending"),{nodeCode:"state_conflict"});
+    await this.client.query("INSERT INTO node_operation_events(id,operation_id,sequence,type,payload) VALUES(gen_random_uuid(),$1,1,'operation.succeeded',$2)",[input.operationId,input.result]);
+    await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,$3,$4)",[input.workspaceId,input.nodeId,`node.${input.type}`,{operationId:input.operationId,receiptId,...input.result}]);
+    return{...operationRow(updated.rows[0]),receipt:r};
+  }
+  // placementDrift lists bound nodes whose applied placement hold differs
+  // from the hold their state requires: their lifecycle state when paused,
+  // quarantined or draining, or offline when an active node's heartbeat lapsed.
+  async placementDrift(limit:number,nodeId?:string):Promise<PlacementDrift[]>{
+    const result=await this.client.query(`SELECT * FROM (SELECT n.id,n.workspace_id,n.kubernetes_cluster_id,n.kubernetes_node_name,n.kubernetes_node_uid,n.placement_hold,
+        CASE WHEN n.lifecycle_state IN ('paused','quarantined','draining') THEN n.lifecycle_state
+             WHEN n.offline_after IS NOT NULL AND n.offline_after<=clock_timestamp() THEN 'offline' END AS desired
+      FROM nodes n WHERE n.kubernetes_node_uid IS NOT NULL AND n.lifecycle_state IN ('active','paused','quarantined','draining') AND ($2::uuid IS NULL OR n.id=$2)) drift
+      WHERE desired IS DISTINCT FROM placement_hold ORDER BY id LIMIT $1`,[limit,nodeId??null]);
+    return result.rows.map(row=>({nodeId:row.id,workspaceId:row.workspace_id,clusterId:row.kubernetes_cluster_id,nodeName:row.kubernetes_node_name,nodeUid:row.kubernetes_node_uid,applied:row.placement_hold,desired:row.desired}));
+  }
+  async recordPlacementHold(input:{nodeId:string;workspaceId:string;prior:PlacementHold|null;applied:PlacementHold|null}):Promise<boolean>{
+    const result=await this.client.query("UPDATE nodes SET placement_hold=$3 WHERE id=$1 AND placement_hold IS NOT DISTINCT FROM $2",[input.nodeId,input.prior,input.applied]);
+    if(result.rowCount)await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,'node.placement_hold_changed',$3)",[input.workspaceId,input.nodeId,{from:input.prior,to:input.applied}]);
+    return result.rowCount===1;
   }
   async listEvents(nodeId:string,afterId:string):Promise<NodeEvent[]> {
     if(afterId){const cursor=await this.client.query("SELECT 1 FROM node_operation_events e JOIN node_operations o ON o.id=e.operation_id WHERE e.id=$1 AND o.node_id=$2",[afterId,nodeId]);if(!cursor.rowCount)throw Object.assign(new Error("event cursor does not belong to this node"),{nodeCode:"invalid_request"});}

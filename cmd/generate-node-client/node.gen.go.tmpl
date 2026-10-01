@@ -645,7 +645,7 @@ func ValidateCreateNodeOperationRequest(request CreateNodeOperationRequest) erro
 		return fmt.Errorf("node operation request is invalid")
 	}
 	switch request.Type {
-	case "pause", "resume", "rotate_identity", "repair":
+	case "pause", "resume", "quarantine", "rotate_identity", "repair":
 		var parameters struct{}
 		if err := decodeClosedNodeObject(request.Parameters, &parameters); err != nil {
 			return fmt.Errorf("%s parameters: %w", request.Type, err)
@@ -1069,6 +1069,18 @@ func ValidateNodeOperationReceipt(receipt NodeOperationReceipt) error {
 	if receipt.SignerKind == "node_identity" {
 		if receipt.IdentityGeneration == nil || *receipt.IdentityGeneration < 1 {
 			return fmt.Errorf("node-identity receipt generation is invalid")
+		}
+	} else if oneOf(string(receipt.OperationType), "pause", "resume", "quarantine") {
+		// The control plane itself performs these: it changes the node's
+		// lifecycle state and placement hold. It may report their success, but
+		// never a host action.
+		if receipt.IdentityGeneration != nil {
+			return fmt.Errorf("control-plane receipt identity is invalid")
+		}
+		for _, action := range receipt.Actions {
+			if action.Kind != "api" {
+				return fmt.Errorf("control-plane receipt claims a host action")
+			}
 		}
 	} else {
 		if receipt.IdentityGeneration != nil || !oneOf(receipt.Outcome, "failed", "cancelled", "recovery_required") {
@@ -2255,7 +2267,7 @@ func validArchitecture(value NodeArchitecture) bool {
 }
 
 func validNodeOperationType(value NodeOperationType) bool {
-	return oneOf(string(value), "pause", "resume", "label", "cordon", "uncordon", "rotate_identity", "repair", "update", "drain", "remove")
+	return oneOf(string(value), "pause", "resume", "quarantine", "label", "cordon", "uncordon", "rotate_identity", "repair", "update", "drain", "remove")
 }
 
 func ValidateNodeEnrollmentSecret(secret NodeEnrollmentSecret) error {

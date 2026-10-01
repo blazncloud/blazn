@@ -55,3 +55,19 @@ test("broker HTTP assigns a worker's workspace only through the closed assignmen
     const bearer=await fetch(`${origin}/v1/node-service/node-assignments`,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer user-token"},body:JSON.stringify(assignment)});assert.equal(bearer.status,401);
   }finally{await new Promise<void>(r=>server.close(()=>r()));}
 });
+
+test("broker placement-hold route accepts an exact hold or release and rejects user credentials",async()=>{
+  const seen:unknown[]=[];const service={async holdNode(value:unknown){seen.push(value);return true;}} as unknown as NodeBrokerService,server=createNodeBrokerServer(service);
+  await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));const origin=`http://127.0.0.1:${(server.address() as AddressInfo).port}`,hold={clusterId:"cluster-a",nodeName:"worker-a",nodeUid:"44444444-4444-4444-8444-444444444444",holdReason:"quarantined"};
+  const post=(body:unknown,headers:Record<string,string>={})=>fetch(`${origin}/v1/node-service/node-placement-holds`,{method:"POST",headers:{"content-type":"application/json",...headers},body:JSON.stringify(body)});
+  try{
+    const held=await post(hold);assert.equal(held.status,200);assert.deepEqual(await held.json(),{changed:true});
+    const released=await post({...hold,holdReason:""});assert.equal(released.status,200);
+    assert.deepEqual(seen,[hold,{...hold,holdReason:""}]);
+    assert.equal((await post({...hold,holdReason:7})).status,400);
+    assert.equal((await post({clusterId:hold.clusterId,nodeName:hold.nodeName,nodeUid:hold.nodeUid})).status,400);
+    assert.equal((await post({...hold,workspaceId:"x"})).status,400);
+    assert.equal((await post(hold,{authorization:"Bearer user-token"})).status,401);
+    assert.equal(seen.length,2);
+  }finally{await new Promise<void>(r=>server.close(()=>r()));}
+});

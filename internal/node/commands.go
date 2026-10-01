@@ -65,6 +65,28 @@ func (c *CommandRuntime) Get(ctx context.Context, nodeID string) (client.Node, e
 	return api.GetNode(ctx, c.AccessToken, nodeID)
 }
 
+type operationAPI interface {
+	CreateNodeOperation(context.Context, string, string, string, client.CreateNodeOperationRequest) (client.NodeOperation, error)
+}
+
+// Operate requests a parameterless Node operation (pause, quarantine or
+// resume) against the Node's current version. The control plane completes
+// these itself and returns the signed receipt.
+func (c *CommandRuntime) Operate(ctx context.Context, nodeID string, operation client.NodeOperationType, requestID string) (client.NodeOperation, error) {
+	if operation != "pause" && operation != "quarantine" && operation != "resume" {
+		return client.NodeOperation{}, fmt.Errorf("node operation %q is not supported", operation)
+	}
+	node, err := c.Get(ctx, nodeID)
+	if err != nil {
+		return client.NodeOperation{}, err
+	}
+	api, ok := c.Service.api.(operationAPI)
+	if !ok {
+		return client.NodeOperation{}, errors.New("node operation API is unavailable")
+	}
+	return api.CreateNodeOperation(ctx, c.AccessToken, nodeID, requestID, client.CreateNodeOperationRequest{Type: operation, ExpectedVersion: node.Version, Parameters: []byte("{}")})
+}
+
 func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOptions) (EnrollResult, error) {
 	if c.Service == nil {
 		return EnrollResult{}, errors.New("node enrollment service is unavailable")

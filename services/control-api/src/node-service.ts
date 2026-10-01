@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { canonicalJson, enrollmentToken, nodeInstallReceiptDigest, publicKeyFingerprint, renderedDigest, requestDigest, sha256Hex, verifyNodeInstallReceiptSignature, verifyNodePlanSignature, verifyNodeProof } from "./node-crypto.js";
 import type { NodePlanFactory } from "./node-plan.js";
-import type { NodeIdempotencyReceipt, NodeStore, NodeTransaction } from "./node-store.js";
+import type { NodeIdempotencyReceipt, NodeStore, NodeTransaction, PlacementDrift, PlacementHold } from "./node-store.js";
 import { nodeRoleAllows, NodeHttpError, type ExchangeNodeEnrollmentResponse, type KubernetesBinding, type NodeActivationRequest, type NodeActivationResponse, type NodeArchitecture, type NodeEvent, type NodeOperationType, type NodeOperationView, type NodePlanSigningKey, type NodePlatform, type NodePrincipal, type NodeView } from "./node-types.js";
 
 export interface CreateEnrollmentInput { name: string; mode: "fresh" | "adopt"; platform: NodePlatform; architecture?: NodeArchitecture }
@@ -80,11 +80,33 @@ export class NodeService {
       if(receipt){verifyReceipt(receipt,node.workspaceId,`node:${nodeId}`,digest);return receipt.responseBody as NodeOperationView;}
       if(node.version!==input.expectedVersion) throw new NodeHttpError("version_conflict","node version changed");
       validateOperationState(node,input.type,input.parameters);
-      const operation=await tx.insertOperation({id:randomUUID(),workspaceId:node.workspaceId,nodeId,type:input.type,expectedVersion:input.expectedVersion,requestedBy:principal.userId,idempotencyKey,requestDigest:digest,parameters:input.parameters});
+      let operation=await tx.insertOperation({id:randomUUID(),workspaceId:node.workspaceId,nodeId,type:input.type,expectedVersion:input.expectedVersion,requestedBy:principal.userId,idempotencyKey,requestDigest:digest,parameters:input.parameters});
+      const placement=placementTransition(input.type);
+      if(placement)operation=await this.completePlacementOperation(tx,node,operation,input.expectedVersion,placement);
       await tx.putIdempotency(principal.userId,`node.operation.${input.type}`,idempotencyKey,{workspaceId:node.workspaceId,targetKey:`node:${nodeId}`,requestDigest:digest,responseStatus:202,responseBody:operation});
       return operation;
     }).catch(mapStoreError);
   }
+
+  // Pause, quarantine and resume are performed by the control plane itself:
+  // it moves the node's lifecycle state and records a control-plane signed
+  // receipt. The placement hold on the Kubernetes Node follows through
+  // reconcilePlacement, so a non-active node receives no new sandboxes.
+  private async completePlacementOperation(tx:NodeTransaction,node:NodeView,operation:NodeOperationView,expectedVersion:number,placement:{from:string[];to:"active"|"paused"|"quarantined"}):Promise<NodeOperationView>{
+    if(!this.planFactory.signOperationReceipt)throw new NodeHttpError("node_broker_unavailable","node operation receipt signer is unavailable");
+    const startedAt=this.now().toISOString();
+    if(!await tx.transitionLifecycle({nodeId:node.id,expectedVersion,from:placement.from,to:placement.to}))throw new NodeHttpError("version_conflict","node version changed");
+    const key=validSigningKey(await this.planFactory.signingKey());
+    const receipt=await this.planFactory.signOperationReceipt({schemaVersion:"nodes/v1alpha1",receiptId:randomUUID(),operationId:operation.id,nodeId:node.id,workspaceId:node.workspaceId,
+      operationType:operation.type,expectedNodeVersion:expectedVersion,startedAt,completedAt:this.now().toISOString(),outcome:"succeeded",
+      kubernetesBefore:node.kubernetesBinding??null,kubernetesAfter:node.kubernetesBinding??null,
+      actions:[{ordinal:1,kind:"api",target:`node.lifecycleState=${placement.to}`,outcome:"applied"}],residues:[],
+      signerKind:"control_plane",identityGeneration:null,signerFingerprint:key.fingerprint});
+    return tx.completeControlPlaneOperation({operationId:operation.id,workspaceId:node.workspaceId,nodeId:node.id,type:operation.type,receipt,result:{lifecycleState:placement.to}});
+  }
+
+  placementDrift(limit:number,nodeId?:string):Promise<PlacementDrift[]>{return this.store.transaction(tx=>tx.placementDrift(limit,nodeId));}
+  recordPlacementHold(input:{nodeId:string;workspaceId:string;prior:PlacementHold|null;applied:PlacementHold|null}):Promise<boolean>{return this.store.transaction(tx=>tx.recordPlacementHold(input));}
 
   async heartbeat(input:HeartbeatInput,proof:string):Promise<void>{
     validateHeartbeat(input); const sentAt=new Date(input.sentAt);
@@ -201,10 +223,19 @@ function array(v:unknown,name:string,max:number):unknown[]{if(!Array.isArray(v)|
 function positiveInt(v:unknown,name:string){if(typeof v!=="number"||!Number.isSafeInteger(v)||v<1)invalid(`${name} is invalid`);}
 function boundedText(v:unknown,name:string,max:number):string{if(typeof v!=="string"||!v||v.length>max)invalid(`${name} is invalid`);return v;}
 function capabilityHealth(c:Record<string,unknown>):unknown{const host=c.host,worker=c.worker;return{host:host&&typeof host==="object"?(host as Record<string,unknown>).health:null,worker:worker&&typeof worker==="object"?(worker as Record<string,unknown>).health:null};}
-function validOperation(i:{type:NodeOperationType;expectedVersion:number;parameters:Record<string,unknown>}){if(!["pause","resume","label","cordon","uncordon","rotate_identity","repair","update","drain","remove"].includes(i.type))invalid("operation type is invalid");if(!Number.isSafeInteger(i.expectedVersion)||i.expectedVersion<1)invalid("expectedVersion is invalid");if(!i.parameters||typeof i.parameters!=="object"||Array.isArray(i.parameters))invalid("parameters must be an object");rejectSecrets(i.parameters);}
+function validOperation(i:{type:NodeOperationType;expectedVersion:number;parameters:Record<string,unknown>}){if(!["pause","resume","quarantine","label","cordon","uncordon","rotate_identity","repair","update","drain","remove"].includes(i.type))invalid("operation type is invalid");if(!Number.isSafeInteger(i.expectedVersion)||i.expectedVersion<1)invalid("expectedVersion is invalid");if(!i.parameters||typeof i.parameters!=="object"||Array.isArray(i.parameters))invalid("parameters must be an object");rejectSecrets(i.parameters);}
 function exact(p:Record<string,unknown>,keys:string[]){if(Object.keys(p).length!==keys.length||keys.some(k=>!(k in p)))invalid("operation parameters are invalid");}
-function validateOperationState(node:NodeView,type:NodeOperationType,p:Record<string,unknown>){if(node.lifecycleState==="removed")throw new NodeHttpError("state_conflict","removed node cannot be operated");if(type==="pause"&&node.lifecycleState!=="active")throw new NodeHttpError("state_conflict","only an active node can be paused");if(type==="resume"&&node.lifecycleState!=="paused")throw new NodeHttpError("state_conflict","only a paused node can be resumed");
-  if(["pause","resume","rotate_identity","repair"].includes(type))exact(p,[]);
+// placementTransition describes the lifecycle moves the control plane makes
+// itself. allowed is checked against the effective state (an active node
+// whose heartbeat lapsed reads as offline); from is the stored state.
+function placementTransition(type:NodeOperationType):{allowed:string[];from:string[];to:"active"|"paused"|"quarantined";conflict:string}|undefined{
+  if(type==="pause")return{allowed:["active","offline"],from:["active"],to:"paused",conflict:"only an active node can be paused"};
+  if(type==="quarantine")return{allowed:["active","offline","paused","draining"],from:["active","paused","draining"],to:"quarantined",conflict:"only an active, paused or draining node can be quarantined"};
+  if(type==="resume")return{allowed:["paused","quarantined"],from:["paused","quarantined"],to:"active",conflict:"only a paused or quarantined node can be resumed"};
+  return undefined;
+}
+function validateOperationState(node:NodeView,type:NodeOperationType,p:Record<string,unknown>){if(node.lifecycleState==="removed")throw new NodeHttpError("state_conflict","removed node cannot be operated");const placement=placementTransition(type);if(placement&&!placement.allowed.includes(node.lifecycleState))throw new NodeHttpError("state_conflict",placement.conflict);
+  if(["pause","resume","quarantine","rotate_identity","repair"].includes(type))exact(p,[]);
   if(type==="label"){exact(p,["key","value"]);if(typeof p.key!=="string"||!/^blazn\.dev\/[a-z0-9][a-z0-9._-]{0,62}$/.test(p.key)||typeof p.value!=="string"||p.value.length>128)invalid("label parameters are invalid");}
   if(type==="update"){exact(p,["targetVersion"]);if(typeof p.targetVersion!=="string"||!/^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(p.targetVersion)||p.targetVersion.length>128)invalid("update parameters are invalid");}
   if(["cordon","uncordon","drain","remove"].includes(type)){if(!node.kubernetesBinding)throw new NodeHttpError("state_conflict","operation requires a Kubernetes binding");const base=["clusterId","expectedNodeUid","expectedResourceVersion"];const extra=type==="drain"?["workspaceId","deadlineSeconds"]:type==="remove"?["confirm","preserveHostData"]:[];exact(p,[...base,...extra]);if(p.clusterId!==node.kubernetesBinding.clusterId||p.expectedNodeUid!==node.kubernetesBinding.nodeUid||p.expectedResourceVersion!==node.kubernetesBinding.resourceVersion)throw new NodeHttpError("version_conflict","Kubernetes binding changed");if(type==="drain"&&(p.workspaceId!==node.workspaceId||!Number.isSafeInteger(p.deadlineSeconds)||Number(p.deadlineSeconds)<60||Number(p.deadlineSeconds)>3600))invalid("drain parameters are invalid");if(type==="remove"&&(p.confirm!==true||p.preserveHostData!==true))invalid("remove confirmation is required");}
