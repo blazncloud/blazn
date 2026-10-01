@@ -91,3 +91,14 @@ func TestDecodeDrainRequestIsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestExecRunnerReadsANodeSizedOutputAndBoundsLargerOnes(t *testing.T) {
+	// A busy worker's or control-plane host's Node JSON is 18-20 KiB.
+	out, err := ExecRunner{}.Run(context.Background(), "/bin/sh", []string{"-c", "head -c 20480 /dev/zero"})
+	if err != nil || len(out) != 20480 {
+		t.Fatalf("len=%d err=%v", len(out), err)
+	}
+	if _, err := (ExecRunner{}).Run(context.Background(), "/bin/sh", []string{"-c", "head -c 300000 /dev/zero"}); err == nil {
+		t.Fatal("output beyond the cap was accepted")
+	}
+}

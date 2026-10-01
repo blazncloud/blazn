@@ -22,7 +22,12 @@ import (
 	"time"
 )
 
-const maxCommandOutput = 16 << 10
+// maxCommandOutput bounds what the issuer reads from a helper command. A
+// Node object includes its cached image list (kubelet reports up to 50 by
+// default), which already reaches 18 KiB on a busy Frontro worker and 20 KiB
+// on a control-plane host; at the old 16 KiB cap every assign, hold, drain or
+// retire of such a Node failed as microk8s_unavailable.
+const maxCommandOutput = 256 << 10
 const maxTokenFileBytes = 1 << 20
 
 var tokenLinePattern = regexp.MustCompile(`^([0-9a-f]{32})(?:\|([0-9]{10}))?$`)
