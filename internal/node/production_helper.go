@@ -22,7 +22,10 @@ import (
 	"github.com/blazncloud/blazn/internal/client"
 )
 
-const RootPrepareStateSubcommand = "node-root-helper-init"
+const (
+	RootPrepareStateSubcommand = "node-root-helper-init"
+	RootRestoreStateSubcommand = "node-root-helper-restore"
+)
 
 func RunProductionRootHelper(ctx context.Context, input io.Reader, output io.Writer) error {
 	profileOwner, err := productionTrustedProfileOwner()
@@ -115,6 +118,20 @@ func observedIdentityFromAuthority(authority RootInstallAuthority) (RootObserved
 }
 
 func prepareProductionServiceState(ctx context.Context, expected, binary string) error {
+	if err := runProductionStateHelper(ctx, expected, binary, RootPrepareStateSubcommand); err != nil {
+		return errors.New("prepare node service state failed")
+	}
+	return nil
+}
+
+func restoreProductionServiceState(ctx context.Context, expected, binary string) error {
+	if err := runProductionStateHelper(ctx, expected, binary, RootRestoreStateSubcommand); err != nil {
+		return errors.New("restore node service state failed")
+	}
+	return nil
+}
+
+func runProductionStateHelper(ctx context.Context, expected, binary, subcommand string) error {
 	paths, err := HostProductionNodePaths()
 	if err != nil || paths.ServiceStateRoot != expected {
 		return errors.New("production service state path is invalid")
@@ -122,27 +139,52 @@ func prepareProductionServiceState(ctx context.Context, expected, binary string)
 	if !filepath.IsAbs(binary) || filepath.Clean(binary) != binary {
 		return errors.New("node binary path is invalid")
 	}
-	command := exec.CommandContext(ctx, "/usr/bin/sudo", binary, RootPrepareStateSubcommand)
+	command := exec.CommandContext(ctx, "/usr/bin/sudo", binary, subcommand)
 	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C"}
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := command.Run(); err != nil {
-		return errors.New("prepare node service state failed")
-	}
-	return nil
+	return command.Run()
 }
 
 func PrepareProductionServiceState() error {
+	preparation, err := productionServiceStatePreparation()
+	if err != nil {
+		return err
+	}
+	source, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if preparation.Executable, err = filepath.EvalSymlinks(source); err != nil {
+		return err
+	}
+	return preparation.prepare()
+}
+
+// RestoreProductionServiceState returns the daemon's private service state to
+// the ownership recorded by the last successful management preparation. The
+// CLI calls it when a management command fails after that preparation, so a
+// failed uninstall, recover, or repair never leaves the daemon locked out of
+// its own state.
+func RestoreProductionServiceState() error {
+	preparation, err := productionServiceStatePreparation()
+	if err != nil {
+		return err
+	}
+	return preparation.restoreRecorded()
+}
+
+func productionServiceStatePreparation() (serviceStatePreparation, error) {
 	if currentUID() != 0 {
-		return errors.New("service-state preparation requires UID 0")
+		return serviceStatePreparation{}, errors.New("service-state preparation requires UID 0")
 	}
 	uid, uidErr := strconv.Atoi(os.Getenv("SUDO_UID"))
 	gid, gidErr := strconv.Atoi(os.Getenv("SUDO_GID"))
 	if uidErr != nil || gidErr != nil || uid <= 0 || gid <= 0 {
-		return errors.New("service-state preparation requires an authenticated sudo caller")
+		return serviceStatePreparation{}, errors.New("service-state preparation requires an authenticated sudo caller")
 	}
 	paths, err := HostProductionNodePaths()
 	if err != nil {
-		return err
+		return serviceStatePreparation{}, err
 	}
 	allowed := map[int64]bool{0: true, int64(uid): true}
 	serviceName := "blazn-node"
@@ -154,56 +196,388 @@ func PrepareProductionServiceState() error {
 			allowed[serviceUID] = true
 		}
 	}
-	if err := transitionPrivateStateOwnership(paths.ServiceStateRoot, uid, gid, allowed); err != nil {
+	return serviceStatePreparation{
+		Paths:             paths,
+		UID:               uid,
+		GID:               gid,
+		Allowed:           allowed,
+		ReturnParent:      paths.ServiceStateRoot == LinuxNodeServiceStateRoot,
+		SystemBinaryPath:  defaultRootBinaryPath,
+		WriteSystemBinary: func(path string, value []byte) error { return writeRootAtomic(path, value, 0755, 0, 0) },
+		ProvisionProfiles: provisionProductionBootstrapProfiles,
+	}, nil
+}
+
+const serviceStateHandoffName = "service-state-handoff.json"
+
+type serviceStatePreparation struct {
+	Paths   ProductionNodePaths
+	UID     int
+	GID     int
+	Allowed map[int64]bool
+	// ReturnParent also hands the signed service parent to the caller; it is
+	// daemon-owned only after activation.
+	ReturnParent      bool
+	Executable        string
+	SystemBinaryPath  string
+	WriteSystemBinary func(string, []byte) error
+	ProvisionProfiles func(ProductionNodePaths, int, int) error
+}
+
+// prepare hands the private service state to the authenticated sudo caller.
+// Every check that can refuse the command runs before the first mutation: a
+// management command run by a CLI other than the one the signed plan pins
+// must leave the system binary, bootstrap receipt and daemon-owned state
+// exactly as it found them. Once mutation starts, any failure returns the
+// service state to its recorded ownership.
+func (p serviceStatePreparation) prepare() (err error) {
+	value, err := readBoundedRegular(p.Executable, 512<<20)
+	if err != nil {
 		return err
 	}
-	if paths.ServiceStateRoot == LinuxNodeServiceStateRoot {
+	pinned, err := verifyManagementBinaryPin(p.Paths, value)
+	if err != nil {
+		return err
+	}
+	snapshot, err := snapshotServiceStateOwnership(p.Paths.ServiceStateRoot)
+	if err != nil {
+		return err
+	}
+	handoff := FileStateStore{Root: p.Paths.RootStateRoot}
+	if pinned {
+		// Persist the pre-transition ownership before mutating it so the
+		// CLI can restore it if a later management step fails.
+		if err := handoff.write(serviceStateHandoffName, snapshot); err != nil {
+			return fmt.Errorf("record service-state ownership: %w", err)
+		}
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if restoreErr := restoreServiceStateOwnership(snapshot, p.restoreAllowed(snapshot)); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore service-state ownership: %w", restoreErr))
+			return
+		}
+		if pinned {
+			_ = removeServiceStateHandoff(handoff)
+		}
+	}()
+	if err := transitionPrivateStateOwnership(p.Paths.ServiceStateRoot, p.UID, p.GID, p.Allowed); err != nil {
+		return err
+	}
+	if p.ReturnParent {
 		// The signed service parent is daemon-owned only after activation. A
 		// recovery or repair first returns it to the authenticated sudo caller
 		// so that account remains the sole owner of the 0700/0600 private child.
-		parent := filepath.Dir(paths.ServiceStateRoot)
+		parent := filepath.Dir(p.Paths.ServiceStateRoot)
 		info, statErr := os.Lstat(parent)
 		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("service-state parent cannot be returned to the authenticated installer")
 		}
 		owner, _, ownerOK := fileOwner(info)
-		if !ownerOK || !allowed[owner] {
+		if !ownerOK || !p.Allowed[owner] {
 			return errors.New("service-state parent cannot be returned to the authenticated installer")
 		}
-		if err := os.Chown(parent, uid, gid); err != nil {
+		if err := os.Chown(parent, p.UID, p.GID); err != nil {
 			return err
 		}
 		if err := os.Chmod(parent, 0711); err != nil {
 			return err
 		}
 	}
-	source, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	source, err = filepath.EvalSymlinks(source)
-	if err != nil {
-		return err
-	}
-	value, err := readBoundedRegular(source, 512<<20)
-	if err != nil {
-		return err
-	}
-	if existing, readErr := readBoundedRegular(defaultRootBinaryPath, 512<<20); readErr == nil {
+	if existing, readErr := readBoundedRegular(p.SystemBinaryPath, 512<<20); readErr == nil {
+		// With an active pin the executable already equals the pinned
+		// binary, so this only repairs a damaged system copy. Without one, a
+		// newer installer may replace a binary left by a removed install.
 		if !bytes.Equal(existing, value) {
-			if !rootReceiptOwnsSystemBinary(paths.RootStateRoot, existing) {
+			if !pinned && !rootReceiptOwnsSystemBinary(p.Paths.RootStateRoot, existing) {
 				return errors.New("system Blazn binary differs from both the authenticated installer and receipt-owned version")
 			}
-			if err := writeRootAtomic(defaultRootBinaryPath, value, 0755, 0, 0); err != nil {
+			if err := p.WriteSystemBinary(p.SystemBinaryPath, value); err != nil {
 				return err
 			}
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) && !strings.Contains(readErr.Error(), "material path is unsafe") {
 		return readErr
-	} else if err := writeRootAtomic(defaultRootBinaryPath, value, 0755, 0, 0); err != nil {
+	} else if err := p.WriteSystemBinary(p.SystemBinaryPath, value); err != nil {
 		return err
 	}
-	return provisionProductionBootstrapProfiles(paths, uid, gid)
+	return p.ProvisionProfiles(p.Paths, p.UID, p.GID)
+}
+
+func (p serviceStatePreparation) restoreRecorded() error {
+	handoff := FileStateStore{Root: p.Paths.RootStateRoot}
+	var snapshot serviceStateOwnershipSnapshot
+	if err := handoff.read(serviceStateHandoffName, 1<<20, &snapshot); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("load service-state ownership record: %w", err)
+	}
+	if snapshot.SchemaVersion != 1 || snapshot.Root != p.Paths.ServiceStateRoot {
+		return errors.New("service-state ownership record does not match this host")
+	}
+	if err := restoreServiceStateOwnership(snapshot, p.restoreAllowed(snapshot)); err != nil {
+		return err
+	}
+	return removeServiceStateHandoff(handoff)
+}
+
+// restoreAllowed lists the owners a restore may take an entry from: the
+// owners the preparation may have produced or found, plus every owner the
+// snapshot recorded.
+func (p serviceStatePreparation) restoreAllowed(snapshot serviceStateOwnershipSnapshot) map[int64]bool {
+	allowed := map[int64]bool{int64(p.UID): true}
+	for owner, ok := range p.Allowed {
+		allowed[owner] = ok
+	}
+	allowed[snapshot.Parent.UID] = true
+	for _, record := range snapshot.Entries {
+		allowed[record.UID] = true
+	}
+	return allowed
+}
+
+func removeServiceStateHandoff(store FileStateStore) error {
+	err := os.Remove(filepath.Join(store.Root, serviceStateHandoffName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// verifyManagementBinaryPin refuses an executable that differs from the
+// binary pinned by an installed node's signed plan and install receipt, and
+// reports whether such a pin exists. A node whose receipt is removed no longer
+// pins a binary, so a newer installer may enroll it again.
+func verifyManagementBinaryPin(paths ProductionNodePaths, value []byte) (bool, error) {
+	receipt, err := (FileStateStore{Root: paths.RootStateRoot}).LoadReceipt()
+	hasReceipt := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("load root install receipt: %w", err)
+	}
+	if hasReceipt && receipt.State == "removed" {
+		return false, nil
+	}
+	authority, err := loadRootAuthority(paths.InstallAuthorityPath())
+	hasAuthority := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if !hasAuthority && !hasReceipt {
+		return false, nil
+	}
+	sum := sha256.Sum256(value)
+	measured := hex.EncodeToString(sum[:])
+	digest := "sha256:" + measured
+	if hasAuthority {
+		version, pinned := "", ""
+		for _, component := range authority.Plan.Components {
+			if component.SourceClass == "current_binary" && component.ArtifactType == "binary" {
+				if pinned != "" {
+					return false, errors.New("signed install plan pins an ambiguous current binary")
+				}
+				version, pinned = component.Version, component.SHA256
+			}
+		}
+		if pinned == "" {
+			return false, errors.New("signed install plan lacks its current binary pin")
+		}
+		// Plan components carry a bare hex digest; receipts prefix theirs.
+		if measured != pinned {
+			return false, fmt.Errorf("running Blazn executable %s is not the binary pinned by the signed install plan (version %s, sha256:%s); rerun this command with the pinned CLI", digest, version, pinned)
+		}
+	}
+	if hasReceipt && receipt.Binary.Path == defaultRootBinaryPath && receipt.Binary.Digest != digest {
+		return false, fmt.Errorf("running Blazn executable %s is not the binary pinned by the install receipt (%s); rerun this command with the pinned CLI", digest, receipt.Binary.Digest)
+	}
+	return true, nil
+}
+
+type serviceStateOwnership struct {
+	UID  int64       `json:"uid"`
+	GID  int64       `json:"gid"`
+	Mode os.FileMode `json:"mode"`
+}
+
+type serviceStateOwnershipSnapshot struct {
+	SchemaVersion int                              `json:"schemaVersion"`
+	Root          string                           `json:"root"`
+	ParentExisted bool                             `json:"parentExisted"`
+	RootExisted   bool                             `json:"rootExisted"`
+	Parent        serviceStateOwnership            `json:"parent"`
+	Entries       map[string]serviceStateOwnership `json:"entries"`
+}
+
+const maxServiceStateEntries = 1024
+
+func ownershipOf(info os.FileInfo) (serviceStateOwnership, bool) {
+	owner, _, ownerOK := fileOwner(info)
+	group, groupOK := fileGroup(info)
+	return serviceStateOwnership{UID: owner, GID: group, Mode: info.Mode().Perm()}, ownerOK && groupOK
+}
+
+// snapshotServiceStateOwnership records the owner, group and mode of the
+// service-state parent and every entry below the state root without following
+// links. An entry the transition would refuse is refused here first.
+func snapshotServiceStateOwnership(root string) (serviceStateOwnershipSnapshot, error) {
+	snapshot := serviceStateOwnershipSnapshot{SchemaVersion: 1, Root: root, Entries: map[string]serviceStateOwnership{}}
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return snapshot, errors.New("service-state root path is invalid")
+	}
+	parent := filepath.Dir(root)
+	if parent == root || parent == string(filepath.Separator) {
+		return snapshot, errors.New("service-state parent path is invalid")
+	}
+	parentInfo, err := os.Lstat(parent)
+	if errors.Is(err, os.ErrNotExist) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return snapshot, err
+	}
+	if !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
+		return snapshot, errors.New("service-state parent contains an unsafe ownership boundary")
+	}
+	var ok bool
+	if snapshot.Parent, ok = ownershipOf(parentInfo); !ok {
+		return snapshot, errors.New("service-state parent ownership is unavailable")
+	}
+	snapshot.ParentExisted = true
+	rootInfo, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return snapshot, err
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return snapshot, errors.New("service-state root is not a directory")
+	}
+	snapshot.RootExisted = true
+	stateRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return snapshot, err
+	}
+	defer stateRoot.Close()
+	opened, err := stateRoot.Lstat(".")
+	if err != nil || !os.SameFile(rootInfo, opened) {
+		return snapshot, errors.New("service-state root changed while recording ownership")
+	}
+	err = fs.WalkDir(stateRoot.FS(), ".", func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := stateRoot.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+			return errors.New("service state contains an unsafe ownership boundary")
+		}
+		record, ok := ownershipOf(info)
+		if !ok {
+			return errors.New("service-state ownership is unavailable")
+		}
+		if len(snapshot.Entries) >= maxServiceStateEntries {
+			return errors.New("service state exceeds the ownership record limit")
+		}
+		snapshot.Entries[path] = record
+		return nil
+	})
+	return snapshot, err
+}
+
+// restoreServiceStateOwnership returns the service state to a snapshot. An
+// entry created after the snapshot takes the recorded root's owner with the
+// private mode, so the daemon can still read everything under its root.
+func restoreServiceStateOwnership(snapshot serviceStateOwnershipSnapshot, allowed map[int64]bool) error {
+	root := snapshot.Root
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return errors.New("service-state root path is invalid")
+	}
+	parent := filepath.Dir(root)
+	if !snapshot.ParentExisted {
+		// The transition created both directories. Removing a directory
+		// that has gained content fails, which leaves that content in place.
+		_ = os.Remove(root)
+		_ = os.Remove(parent)
+		return nil
+	}
+	if !snapshot.RootExisted {
+		_ = os.Remove(root)
+	} else if err := restorePinnedStateTree(snapshot, allowed); err != nil {
+		return err
+	}
+	parentFile, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	defer parentFile.Close()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		return err
+	}
+	openedParent, err := parentFile.Stat()
+	if err != nil {
+		return err
+	}
+	owner, _, ok := fileOwner(openedParent)
+	if !ok || !allowed[owner] || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(parentInfo, openedParent) {
+		return errors.New("service-state parent contains an unsafe ownership boundary")
+	}
+	if err := parentFile.Chown(int(snapshot.Parent.UID), int(snapshot.Parent.GID)); err != nil {
+		return err
+	}
+	return parentFile.Chmod(snapshot.Parent.Mode)
+}
+
+func restorePinnedStateTree(snapshot serviceStateOwnershipSnapshot, allowed map[int64]bool) error {
+	rootRecord, ok := snapshot.Entries["."]
+	if !ok {
+		return errors.New("service-state ownership record lacks its root")
+	}
+	stateRoot, err := os.OpenRoot(snapshot.Root)
+	if err != nil {
+		return err
+	}
+	defer stateRoot.Close()
+	return fs.WalkDir(stateRoot.FS(), ".", func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := stateRoot.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("service state contains an unsafe ownership boundary")
+		}
+		file, err := stateRoot.Open(path)
+		if err != nil {
+			return err
+		}
+		mutationErr := func() error {
+			opened, err := file.Stat()
+			if err != nil {
+				return err
+			}
+			owner, links, ok := fileOwner(opened)
+			if !ok || !allowed[owner] || !os.SameFile(info, opened) || (!opened.IsDir() && (!opened.Mode().IsRegular() || links != 1)) {
+				return errors.New("service state contains an unsafe ownership boundary")
+			}
+			record, recorded := snapshot.Entries[path]
+			if !recorded {
+				record = serviceStateOwnership{UID: rootRecord.UID, GID: rootRecord.GID, Mode: 0600}
+				if opened.IsDir() {
+					record.Mode = 0700
+				}
+			}
+			if err := file.Chown(int(record.UID), int(record.GID)); err != nil {
+				return err
+			}
+			return file.Chmod(record.Mode)
+		}()
+		closeErr := file.Close()
+		if mutationErr != nil {
+			return mutationErr
+		}
+		return closeErr
+	})
 }
 
 type bootstrapProfileReceipt struct {

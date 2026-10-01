@@ -204,7 +204,16 @@ func (a *App) Run(args []string) int {
 			return a.writeError(format, ExitUsage, "usage", "node root state initializer accepts no options")
 		}
 		if err := nodepkg.PrepareProductionServiceState(); err != nil {
-			fmt.Fprintln(a.stderr, "node root state initialization failed")
+			fmt.Fprintf(a.stderr, "node root state initialization failed: %v\n", err)
+			return ExitFailure
+		}
+		return ExitSuccess
+	case nodepkg.RootRestoreStateSubcommand:
+		if format != OutputHuman || len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "node root state restorer accepts no options")
+		}
+		if err := nodepkg.RestoreProductionServiceState(); err != nil {
+			fmt.Fprintf(a.stderr, "node root state restore failed: %v\n", err)
 			return ExitFailure
 		}
 		return ExitSuccess

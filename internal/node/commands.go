@@ -35,7 +35,40 @@ type CommandRuntime struct {
 	TrustedProfileRoot string
 	PlatformFactory    func(client.NodeTrustedInstallProfile) (Platform, error)
 	PrepareState       func(context.Context) error
-	CleanupClient      PrivilegedClient
+	// RestoreState returns the daemon's private state to the ownership
+	// PrepareState recorded, after a management command fails.
+	RestoreState   func(context.Context) error
+	CleanupClient  PrivilegedClient
+	stateHandedOff bool
+}
+
+// prepareState hands the daemon's private state to the caller at most once
+// per command, so the root helper records the daemon-owned ownership rather
+// than its own earlier handoff.
+func (c *CommandRuntime) prepareState(ctx context.Context) error {
+	if c.PrepareState == nil || c.stateHandedOff {
+		return nil
+	}
+	if err := c.PrepareState(ctx); err != nil {
+		return err
+	}
+	c.stateHandedOff = true
+	return nil
+}
+
+// restoreAfterFailure hands the private state back to the daemon when a
+// management command fails after preparing it. A removed receipt means the
+// daemon and its account are gone, so the state stays with the caller to
+// finish cleanup.
+func (c *CommandRuntime) restoreAfterFailure(ctx context.Context, receipt client.NodeInstallReceipt, err error) error {
+	if err == nil || !c.stateHandedOff || c.RestoreState == nil || receipt.State == "removed" {
+		return err
+	}
+	if restoreErr := c.RestoreState(ctx); restoreErr != nil {
+		return errors.Join(err, restoreErr)
+	}
+	c.stateHandedOff = false
+	return err
 }
 
 type managementAPI interface {
@@ -91,10 +124,8 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 	if c.Service == nil {
 		return EnrollResult{}, errors.New("node enrollment service is unavailable")
 	}
-	if c.PrepareState != nil {
-		if err := c.PrepareState(ctx); err != nil {
-			return EnrollResult{}, err
-		}
+	if err := c.prepareState(ctx); err != nil {
+		return EnrollResult{}, err
 	}
 	profileRoot := c.TrustedProfileRoot
 	if profileRoot == "" {
@@ -139,15 +170,14 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 	}
 	return c.Service.Enroll(ctx, EnrollOptions{AccessToken: c.AccessToken, WorkspaceID: options.WorkspaceID, IdempotencyKey: options.RequestID, Name: options.Name, Mode: options.Mode, Platform: platform, Architecture: architecture, MachineFingerprint: options.MachineFingerprint, KubernetesBinding: options.KubernetesBinding, Profile: profile, ProfilePath: options.ProfileFile}, true)
 }
-func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt, error) {
+func (c *CommandRuntime) Recover(ctx context.Context) (receipt client.NodeInstallReceipt, err error) {
 	if c.State == nil || c.Identities == nil {
 		return client.NodeInstallReceipt{}, errors.New("node recovery dependencies are unavailable")
 	}
-	if c.PrepareState != nil {
-		if err := c.PrepareState(ctx); err != nil {
-			return client.NodeInstallReceipt{}, err
-		}
+	if err := c.prepareState(ctx); err != nil {
+		return client.NodeInstallReceipt{}, err
 	}
+	defer func() { err = c.restoreAfterFailure(ctx, receipt, err) }()
 	if receipt, ok, err := c.resumePendingUninstallCleanupPrepared(ctx); ok || err != nil {
 		return receipt, err
 	}
@@ -184,14 +214,15 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 	if c.Installer == nil {
 		return client.NodeInstallReceipt{}, errors.New("node recovery installer is unavailable")
 	}
-	receipt, err := c.Installer.Recover(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
+	receipt, err = c.Installer.Recover(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
 	if err == nil && receipt.State == "removed" {
 		err = c.beginAndResumeUninstallCleanup(ctx, state.Exchange.Plan, receipt)
 	}
 	return receipt, err
 }
 
-func (c *CommandRuntime) Repair(ctx context.Context) (client.NodeInstallReceipt, error) {
+func (c *CommandRuntime) Repair(ctx context.Context) (receipt client.NodeInstallReceipt, err error) {
+	defer func() { err = c.restoreAfterFailure(ctx, receipt, err) }()
 	state, identity, profile, err := c.lifecycleContext(ctx, true)
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
@@ -199,14 +230,15 @@ func (c *CommandRuntime) Repair(ctx context.Context) (client.NodeInstallReceipt,
 	if err := c.configureInstaller(profile); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
-	receipt, err := c.Installer.Repair(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
+	receipt, err = c.Installer.Repair(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
 	if err == nil {
 		err = c.Installer.FinalizeServiceState(ctx, state.Exchange.Plan)
 	}
 	return receipt, err
 }
 
-func (c *CommandRuntime) Uninstall(ctx context.Context, removeManagedRuntime bool) (client.NodeInstallReceipt, error) {
+func (c *CommandRuntime) Uninstall(ctx context.Context, removeManagedRuntime bool) (receipt client.NodeInstallReceipt, err error) {
+	defer func() { err = c.restoreAfterFailure(ctx, receipt, err) }()
 	if receipt, ok, err := c.resumePendingUninstallCleanup(ctx); ok || err != nil {
 		return receipt, err
 	}
@@ -219,7 +251,7 @@ func (c *CommandRuntime) Uninstall(ctx context.Context, removeManagedRuntime boo
 	}
 	c.Installer.SetDrainer(func(ctx context.Context) error { return c.drainNode(ctx, state, identity) })
 	c.Installer.SetRebootstrapper(func(ctx context.Context) error { return c.rebootstrapNode(ctx, state, identity) })
-	receipt, err := c.Installer.Uninstall(ctx, state.Exchange.Plan, state.Exchange.Identity, identity, removeManagedRuntime)
+	receipt, err = c.Installer.Uninstall(ctx, state.Exchange.Plan, state.Exchange.Identity, identity, removeManagedRuntime)
 	if err != nil {
 		return receipt, err
 	}
@@ -331,10 +363,8 @@ func (c *CommandRuntime) retireRemovedNode(ctx context.Context, receipt client.N
 }
 
 func (c *CommandRuntime) resumePendingUninstallCleanup(ctx context.Context) (client.NodeInstallReceipt, bool, error) {
-	if c.PrepareState != nil {
-		if err := c.PrepareState(ctx); err != nil {
-			return client.NodeInstallReceipt{}, true, err
-		}
+	if err := c.prepareState(ctx); err != nil {
+		return client.NodeInstallReceipt{}, true, err
 	}
 	return c.resumePendingUninstallCleanupPrepared(ctx)
 }
@@ -444,10 +474,8 @@ func (c *CommandRuntime) lifecycleContext(ctx context.Context, requireCurrent bo
 	if c.State == nil || c.Identities == nil {
 		return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, errors.New("node lifecycle dependencies are unavailable")
 	}
-	if c.PrepareState != nil {
-		if err := c.PrepareState(ctx); err != nil {
-			return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, err
-		}
+	if err := c.prepareState(ctx); err != nil {
+		return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, err
 	}
 	state, err := c.State.LoadRuntime()
 	if err != nil {
@@ -593,6 +621,9 @@ func newProductionCommandRuntime(api API, accessToken, currentVersion string, jo
 	runtime := &CommandRuntime{Service: service, Daemon: daemon, State: state, InstallerState: installerState, Identities: identities, AccessToken: accessToken, CurrentBinaryPath: binary, CurrentVersion: currentVersion, TrustedProfileRoot: paths.ProfileRoot}
 	runtime.PrepareState = func(ctx context.Context) error {
 		return prepareProductionServiceState(ctx, paths.ServiceStateRoot, binary)
+	}
+	runtime.RestoreState = func(ctx context.Context) error {
+		return restoreProductionServiceState(ctx, paths.ServiceStateRoot, binary)
 	}
 	runtime.PlatformFactory = func(profile client.NodeTrustedInstallProfile) (Platform, error) {
 		resolver := TrustedMaterialResolver{Profile: profile, CurrentBinaryPath: binary, Embedded: embedded, HTTP: &http.Client{Timeout: 2 * time.Minute}, MaxBytes: 512 << 20}
