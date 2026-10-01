@@ -85,7 +85,8 @@ func TestUnprovenUnboundDestroyRecordsTheOriginalFailure(t *testing.T) {
 }
 
 func TestBoundOrSourcedCreateFailureNeverDestroysUnbound(t *testing.T) {
-	bound, _ := createFixture(t)
+	bound, state := createFixture(t)
+	bindWorkItem(&bound, state)
 	_, backend := reconcileUnbound(t, bound, &Failure{Code: "backend_request_rejected", SafeMessage: "rejected"}, nil)
 	if backend.destroyed != 0 {
 		t.Fatal("a bound create destroyed its backend through the unbound path")
