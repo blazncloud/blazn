@@ -9,8 +9,9 @@ No secret values appear here or in the repository: only names and locations.
 | Component | Where | Notes |
 |---|---|---|
 | Control API (`api-dev`) | namespace `blazn-test`, pinned to `ben5` | Serves `https://api.blazn.frontro.com`. Pod has the API, an OpenBao agent (init and renewal), and an nginx sidecar on 8081 that adds the trusted-proxy header. |
+| Agent Run controller | container `agent-run-controller` in the `api-dev` pod | Executes queued Agent Runs: starts the harness in the Run's Sandbox, relays messages, calls the model. Same image as the API. See [`docs/agent-run-controller.md`](../agent-run-controller.md). |
 | Control API (`api`) | same namespace | The earlier test deployment at `https://blazn-test.frontro.com`. Not used by the CLI. |
-| Database | `frontro-db-1` (192.168.0.105), Postgres 17, database `blazn_test` | Roles: `blazn_runtime` (API), `blazn_migration` (migrations), `blazn_node_broker` (broker), plus the sandbox controller's role. TLS with `verify-full`. |
+| Database | `frontro-db-1` (192.168.0.105), Postgres 17, database `blazn_test` | Roles: `blazn_runtime` (API), `blazn_migration` (migrations), `blazn_node_broker` (broker), `blazn_agent_run_controller` (Agent Run controller), plus the sandbox controller's role. TLS with `verify-full`. |
 | Object store | `objectstore` (MinIO) in `blazn-test`, PVC `storage-data` | Bucket `blazn-test`. Used by the API and the sandbox controller. |
 | Image registry | `registry` in `blazn-test`, PVC `registry-data` | `registry.blazn-test.internal`; holds the control API image. |
 | Edge | Traefik `moments-direct-gateway` in `moments-direct` (192.168.0.204) | Shared Frontro gateway. The Blazn routes are recorded in `infra/frontro/edge/blazn-routes.yaml`. Only `/v1/`, `/activate` and `/healthz` are routed to the API. |
@@ -43,6 +44,14 @@ Kubernetes Secrets created by hand are listed, by name and key only, in
 - `api-dev-node`: the install-plan signing key, the plan template, the
   enrollment HMAC key, and the broker caller key.
 
+- `api-dev-agent-run`: the Agent Run controller's database URL
+  (`database-url`) and its model routes (`model-routes.json`). A route with a
+  credential names a file; add that file as another key of this Secret.
+
+The Agent Run controller's database role is created by the migrations without
+a login. On the hosted database it was given `LOGIN`, a password, and
+`pg_hba.conf` lines next to the other `blazn-test` entries.
+
 On `ben1`, the broker's secrets are in `/etc/blazn/node-broker-frontro/secrets`
 (root-only) and the issuer's in `/etc/blazn/microk8s-worker-issuer`.
 
@@ -59,6 +68,16 @@ container on `ben1`, then the issuer.
 ```sh
 ssh ben1 'sudo docker ps --filter name=blazn-node-broker; systemctl is-active blazn-microk8s-worker-issuer'
 ```
+
+Agent Runs: the controller logs one JSON line per event.
+
+```sh
+ssh ben1 'sudo microk8s kubectl -n blazn-test logs deploy/api-dev -c agent-run-controller --tail=50'
+```
+
+A Run that stays `queued` with `sandbox_node_unobserved` retries means the
+Sandbox controller has not recorded the Sandbox's Node; check its logs and its
+permission to read Nodes.
 
 `infra/qualification/qualify-flows.py` exercises sign-up, sign-in, workspaces,
 projects, invitations, roles and sign-out against the hosted API.
@@ -91,6 +110,18 @@ ssh ben1 'sudo microk8s kubectl -n blazn-test set image deployment/api-dev api=r
 
 Migrations are forward-only. A rollback across a migration needs a restore of
 `blazn_test`, so keep migrations backward-compatible with the previous image.
+
+`deploy-api.sh` also builds the in-Sandbox harness (`blazn-agent`, for amd64
+and arm64) into the image and sets the same digest on the
+`agent-run-controller` container.
+
+The namespace has the ResourceQuota `test-budget`. A new container must fit
+inside it, or the rollout stalls with a quota error on the ReplicaSet.
+
+After a rollout the API can answer `node_broker_unavailable` until the issuer's
+first health probe has completed once: the cold probe takes longer than the
+broker's timeout. Run the check under "Check health"; it clears on the second
+attempt.
 
 ## Change other objects
 
