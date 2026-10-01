@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxio"
 )
@@ -32,7 +33,9 @@ func reconcileUnbound(t *testing.T, item WorkItem, failure error, destroyErr err
 	t.Helper()
 	store := &fakeStore{}
 	backend := &destroyingBackend{fakeBackend: &fakeBackend{err: failure}, destroyErr: destroyErr}
-	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+	// The fake store grants a 5s lease, so renew well inside it: the destroy
+	// step refuses a lease that would not survive one renewal.
+	if err := timedController(t, store, backend, 100*time.Millisecond, time.Second).reconcile(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
 	return store, backend

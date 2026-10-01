@@ -1536,9 +1536,8 @@ func TestDestroyUnboundDeletesThenProvesAbsenceOfSandboxPodAndWorkload(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreign := record
-	foreign.WorkspaceID = "workspace-b"
-	assertCode(t, adapter.DestroyUnbound(context.Background(), "workspace-b", request.OwnerID, foreign), ErrIdentityBoundary)
+	assertCode(t, adapter.DestroyUnbound(context.Background(), "workspace-b", request.OwnerID, record), ErrIdentityBoundary)
+	assertCode(t, adapter.DestroyUnbound(context.Background(), request.WorkspaceID, "owner-b", record), ErrIdentityBoundary)
 	if fake.object.Metadata.DeletionTimestamp != "" {
 		t.Fatal("a foreign identity deleted the Sandbox")
 	}
