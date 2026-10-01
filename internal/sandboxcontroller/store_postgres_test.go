@@ -345,12 +345,12 @@ func TestPgStoreRecordsLeaseFencedAgentNodeObservation(t *testing.T) {
 	admission := storeObservationFixture()
 	recorded, err := store.RecordAgentNodeObservation(context.Background(), "operation", "worker", "lease", AgentNodeObservation{
 		AdmissionObservationDigest: admission.Digest, PodUID: admission.Pod.UID, PodResourceVersion: admission.Pod.ResourceVersion,
-		KubernetesClusterID: "cluster-a", KubernetesNodeName: "worker-a", KubernetesNodeUID: "node-uid-a"})
+		KubernetesClusterID: "cluster-a", KubernetesNodeName: "worker-a"})
 	if err != nil || !recorded {
 		t.Fatalf("recorded=%v err=%v", recorded, err)
 	}
 	call := executor.calls[0]
-	if call.query != recordAgentNodeSQL || len(call.args) != 9 || call.args[0] != "operation" || call.args[1] != "worker" || call.args[2] != "lease" || call.args[3] != admission.Digest[7:] || call.args[4] != admission.Pod.UID || call.args[5] != admission.Pod.ResourceVersion || call.args[6] != "cluster-a" || call.args[7] != "worker-a" || call.args[8] != "node-uid-a" {
+	if call.query != recordAgentNodeSQL || len(call.args) != 8 || call.args[0] != "operation" || call.args[1] != "worker" || call.args[2] != "lease" || call.args[3] != admission.Digest[7:] || call.args[4] != admission.Pod.UID || call.args[5] != admission.Pod.ResourceVersion || call.args[6] != "cluster-a" || call.args[7] != "worker-a" {
 		t.Fatalf("call=%#v", call)
 	}
 }

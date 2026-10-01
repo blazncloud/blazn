@@ -192,7 +192,6 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-16), [
-    "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
     "027_controller_role_public_grants.sql",
     "028_development_candidate_image_binding.sql",
@@ -208,7 +207,19 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "038_agent_run_controller.sql",
     "039_email_login_codes.sql",
     "040_agent_run_execution.sql",
+    "041_agent_node_registry_placement.sql",
   ]);
+});
+
+test("Agent node placement resolves the node UID from the Blazn registry",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/041_agent_node_registry_placement.sql"),"utf8");
+  assert.match(sql,/SECURITY DEFINER SET search_path=pg_catalog,public/);
+  assert.match(sql,/node\.lifecycle_state='active' AND node\.trust_state='verified'[\s\S]*node\.agent_eligible AND node\.current_identity_status='active'/);
+  assert.match(sql,/cardinality\(node_uids\)<>1 THEN RETURN false/);
+  assert.match(sql,/RETURN public\.sandbox_controller_record_agent_node_observation\(/);
+  assert.match(sql,/REVOKE ALL ON FUNCTION sandbox_controller_record_agent_node_placement\(uuid,text,uuid,text,text,text,text,text\)[\s\S]*FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller,blazn_agent_run_controller/);
+  assert.match(sql,/GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_placement\(uuid,text,uuid,text,text,text,text,text\) TO blazn_sandbox_controller;\s*$/);
 });
 
 test("warning-free artifact cleanup is canonical at the database boundary",async()=>{

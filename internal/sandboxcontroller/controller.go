@@ -381,9 +381,11 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 		} else {
 			placement, observationErr := observer.ObserveAgentNode(ctx, *state.AdmissionObservation)
 			if observationErr != nil {
-				log.Print("sandbox controller Agent placement observation failed; continuing without evidence")
-			} else if _, recordErr := observationStore.RecordAgentNodeObservation(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, placement); recordErr != nil {
-				log.Print("sandbox controller Agent placement evidence write failed; continuing without evidence")
+				log.Printf("sandbox controller Agent placement observation failed; continuing without evidence: %v", observationErr)
+			} else if recorded, recordErr := observationStore.RecordAgentNodeObservation(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, placement); recordErr != nil {
+				log.Printf("sandbox controller Agent placement evidence write failed; continuing without evidence: %v", recordErr)
+			} else if !recorded {
+				log.Print("sandbox controller Agent placement evidence was not recorded: the scheduled Node is not one active, verified, Agent-eligible Blazn node in this workspace")
 			}
 		}
 		// Missing or fenced evidence is not an ordinary Sandbox failure. Agent

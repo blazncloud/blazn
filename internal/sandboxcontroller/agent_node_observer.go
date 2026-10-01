@@ -39,17 +39,10 @@ func (o *kubernetesAgentNodeObserver) ObserveAgentNode(ctx context.Context, admi
 		!kubernetesDNSNamePattern.MatchString(pod.Spec.NodeName) || len(pod.Spec.NodeName) > 253 {
 		return AgentNodeObservation{}, errors.New("scheduled Pod identity or Node assignment changed")
 	}
-	var node struct {
-		Metadata observedPlacementMetadata `json:"metadata"`
-	}
-	if err := o.get(ctx, "/api/v1/nodes/"+url.PathEscape(pod.Spec.NodeName), &node); err != nil {
-		return AgentNodeObservation{}, err
-	}
-	if node.Metadata.Name != pod.Spec.NodeName || !workerPattern.MatchString(node.Metadata.UID) || !workerPattern.MatchString(node.Metadata.ResourceVersion) {
-		return AgentNodeObservation{}, errors.New("Kubernetes Node identity is invalid")
-	}
+	// The Node itself is not read: the controller holds no cluster-scoped Node
+	// permission. The database maps this name to a registered Blazn node.
 	return AgentNodeObservation{AdmissionObservationDigest: admission.Digest, PodUID: admission.Pod.UID, PodResourceVersion: admission.Pod.ResourceVersion,
-		KubernetesClusterID: o.clusterID, KubernetesNodeName: node.Metadata.Name, KubernetesNodeUID: node.Metadata.UID}, nil
+		KubernetesClusterID: o.clusterID, KubernetesNodeName: pod.Spec.NodeName}, nil
 }
 func (o *kubernetesAgentNodeObserver) get(ctx context.Context, path string, out any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(o.baseURL, "/")+path, nil)

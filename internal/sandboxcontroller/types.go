@@ -100,9 +100,12 @@ type Store interface {
 	Close() error
 }
 
+// AgentNodeObservation names the Node a scheduled Agent sandbox Pod runs on.
+// It carries no Node UID: the controller cannot read Node objects, so the
+// database resolves the UID from Blazn's own node registry.
 type AgentNodeObservation struct {
-	AdmissionObservationDigest, PodUID, PodResourceVersion     string
-	KubernetesClusterID, KubernetesNodeName, KubernetesNodeUID string
+	AdmissionObservationDigest, PodUID, PodResourceVersion string
+	KubernetesClusterID, KubernetesNodeName                string
 }
 
 type AgentNodeObservationStore interface {
