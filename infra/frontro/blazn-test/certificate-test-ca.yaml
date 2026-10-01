@@ -1,0 +1,16 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: test-ca
+  namespace: blazn-test
+spec:
+  commonName: blazn-test-internal-ca
+  duration: 8760h
+  isCA: true
+  issuerRef:
+    kind: Issuer
+    name: test-selfsigned
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  secretName: test-ca

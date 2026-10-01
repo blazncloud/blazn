@@ -6,6 +6,4 @@ resources:
 - networkpolicy-dns.yaml
 - networkpolicy-mail-from-blazn-api-dev.yaml
 - networkpolicy-mail-ingress.yaml
-- persistentvolumeclaim-bootstrap.yaml
-- persistentvolumeclaim-database.yaml
 - service-identity-mail.yaml

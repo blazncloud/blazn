@@ -7,7 +7,7 @@ they are deployed. Operating procedures are in
 | Path | Contents |
 |---|---|
 | `namespaces.yaml` | The `blazn-test` and `blazn-identity-dev` namespaces. |
-| `blazn-test/` | Control API (`api-dev`), object store, registry, their ConfigMaps, ServiceAccounts, PVCs and NetworkPolicies. `kubectl apply -k`. |
+| `blazn-test/` | Control API (`api-dev`), object store, registry, their ConfigMaps, ServiceAccounts, PVCs, NetworkPolicies, and the cert-manager Issuers and Certificates behind their TLS Secrets. `kubectl apply -k`. |
 | `blazn-identity-dev/` | The Mailpit capture inbox used by qualification. The ZITADEL stack that also lived here was retired on 2026-10-01. |
 | `edge/blazn-routes.yaml` | Reference copy of the Blazn routes in the shared Traefik gateway. Not applied from here. |
 | `secrets.json` | Names, types and key names of the Secrets the manifests expect. No values. |

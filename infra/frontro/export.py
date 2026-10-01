@@ -24,7 +24,8 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent
 NAMESPACES = ["blazn-test", "blazn-identity-dev"]
-KINDS = "deployment,service,configmap,networkpolicy,serviceaccount,role,rolebinding,persistentvolumeclaim"
+KINDS = ("deployment,service,configmap,networkpolicy,serviceaccount,role,rolebinding,persistentvolumeclaim,"
+         "certificate.cert-manager.io,issuer.cert-manager.io")
 SKIP = {("ConfigMap", "kube-root-ca.crt"), ("ServiceAccount", "default")}
 DROP_ANNOTATION_PREFIXES = (
     "kubectl.kubernetes.io/", "deployment.kubernetes.io/", "pv.kubernetes.io/",

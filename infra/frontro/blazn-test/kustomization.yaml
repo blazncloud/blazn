@@ -1,6 +1,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
+- certificate-objectstore-tls.yaml
+- certificate-registry-tls.yaml
+- certificate-test-ca.yaml
 - configmap-api-agent-dev.yaml
 - configmap-api-proxy-dev.yaml
 - configmap-api-public-ca.yaml
@@ -11,6 +14,8 @@ resources:
 - deployment-api-dev.yaml
 - deployment-objectstore.yaml
 - deployment-registry.yaml
+- issuer-test-ca.yaml
+- issuer-test-selfsigned.yaml
 - networkpolicy-api-data-egress-dev.yaml
 - networkpolicy-api-dev-email-capture-egress.yaml
 - networkpolicy-api-dev-email-egress.yaml

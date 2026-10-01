@@ -1,16 +1,6 @@
 # Reference only: the blazn-* entries of ConfigMap moments-direct/moments-direct-gateway (dynamic.yml).
 # That gateway is shared Frontro infrastructure; change it there, then re-export.
 http:
-  middlewares:
-    blazn-dev-identity-rate:
-      rateLimit:
-        average: 10
-        burst: 20
-        period: 1s
-    blazn-dev-provider-gate:
-      forwardAuth:
-        address: http://identity-login.blazn-identity-dev.svc.cluster.local:3100/authorize
-        trustForwardHeader: false
   routers:
     blazn-dev-api:
       entryPoints:
@@ -30,57 +20,8 @@ http:
       - https
       rule: Host(`api.blazn.frontro.com`)
       service: noop@internal
-    blazn-dev-login:
-      entryPoints:
-      - websecure
-      middlewares:
-      - blazn-dev-identity-rate
-      - blazn-dev-provider-gate
-      priority: 200
-      rule: Host(`api.blazn.frontro.com`) && (Path(`/ui/v2/login`) || PathPrefix(`/ui/v2/login/`))
-      service: blazn-dev-login
-      tls:
-        certResolver: blazntest
-    blazn-dev-oidc:
-      entryPoints:
-      - websecure
-      middlewares:
-      - blazn-dev-identity-rate
-      priority: 200
-      rule: Host(`api.blazn.frontro.com`) && (Path(`/.well-known/openid-configuration`) || PathPrefix(`/oauth/v2/`) || PathPrefix(`/oidc/v1/`))
-      service: blazn-dev-identity
-      tls:
-        certResolver: blazntest
-    blazn-test-api:
-      entryPoints:
-      - websecure
-      rule: Host(`blazn-test.frontro.com`) && (PathPrefix(`/v1/`) || Path(`/activate`) || Path(`/healthz`))
-      service: blazn-test-api
-      tls:
-        certResolver: blazntest
-        domains:
-        - main: blazn-test.frontro.com
-    blazn-test-http:
-      entryPoints:
-      - web
-      middlewares:
-      - https
-      rule: Host(`blazn-test.frontro.com`)
-      service: noop@internal
   services:
     blazn-dev-api:
       loadBalancer:
         servers:
         - url: http://api-dev.blazn-test.svc.cluster.local:8080
-    blazn-dev-identity:
-      loadBalancer:
-        servers:
-        - url: h2c://identity-api.blazn-identity-dev.svc.cluster.local:8080
-    blazn-dev-login:
-      loadBalancer:
-        servers:
-        - url: http://identity-login.blazn-identity-dev.svc.cluster.local:3000
-    blazn-test-api:
-      loadBalancer:
-        servers:
-        - url: http://api.blazn-test.svc.cluster.local:8080
