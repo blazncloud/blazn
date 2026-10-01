@@ -58,7 +58,7 @@ Current state:
 | M0.6 Pin MicroK8s: `snap refresh --hold microk8s` on every cluster host, plus a reviewed procedure for adding a new revision to the issuer's allowlist (the issuer pins 9072 and 9075) | Hold applied on all hosts (ben1 and the test control plane done 2026-09-30); the procedure is documented |
 | M0.9 Enable the `NodeRestriction` admission plugin on the Frontro API server (today any kubelet credential, including a Blazn node's, can patch every Node) | `auth can-i patch nodes/<other> --as=system:node:<self>` is `no`; existing workers unaffected |
 | M0.7 Clean up 27 stale `Init:Unknown` pods in `blazn-poc-sandboxes` and 11 stale `active` grant rows | Zero orphaned sandbox pods and grants; this needs explicit authorization |
-| M0.8 Replace `blazn.benpelo.com` in contract `$id` URIs and client generators | `grep` finds no personal domain in shipped artifacts |
+| M0.8 Replace `blazn.benpelo.com` in contract `$id` URIs and client generators — **Done** 2026-09-30 (#238; the old POC infra that still named it was removed) | `grep` finds no personal domain in shipped artifacts |
 
 ## M1 — Identity ✅
 

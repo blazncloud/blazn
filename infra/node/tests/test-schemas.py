@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import json
 import pathlib
-import sys
 
 try:
     import jsonschema
@@ -10,100 +9,9 @@ except ImportError:
     raise SystemExit(0)
 
 root = pathlib.Path(__file__).resolve().parents[1]
-m2 = root.parent / "milestone-2"
-node = json.loads((root / "node-broker-receipt.schema.json").read_text())
-plan = json.loads((root / "node-plan-material-receipt.schema.json").read_text())
 template = json.loads((root / "node-install-plan-template.schema.json").read_text())
-upgrade = json.loads((root / "node-broker-upgrade-receipt.schema.json").read_text())
-retry = json.loads((root / "node-broker-upgrade-retry.schema.json").read_text())
-ownership = json.loads((m2 / "ownership-receipt.schema.json").read_text())
-metadata = json.loads((m2 / "backup-metadata.schema.json").read_text())
-for schema in (node, plan, template, upgrade, retry, ownership, metadata):
+issuer = json.loads((root / "microk8s-worker-issuer-receipt.schema.json").read_text())
+for schema in (template, issuer):
     jsonschema.Draft202012Validator.check_schema(schema)
-
-digest = "sha256:" + "a" * 64
-node_value = {
-    "schemaVersion": "blazn.dev/node-broker-infra/v1",
-    "secretsRoot": "/etc/blazn/node-broker/secrets",
-    "databaseRole": "blazn_node_broker",
-    "keyIds": {"enrollment": "node-enrollment/v1", "joinCredential": "node-join-credential/v1"},
-    "digests": {"database-url": digest, "enrollment-hmac-v1": digest, "join-credential-v1": digest},
-    "creationJournal": {"path": "/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json", "digest": digest},
-}
-plan_value = {
-    "schemaVersion": "blazn.dev/node-plan-material/v1",
-    "root": "/etc/blazn/node-plan",
-    "keyId": "control-plane-node-plan/v1",
-    "publicKeyFingerprint": digest,
-    "templateId": "frontro-poc-worker/v1",
-    "templateDigest": digest,
-    "creationJournal": {"path": "/var/lib/blazn/ownership/node-plan-material-upgrade-create.json", "digest": digest},
-}
-store = {node["$id"]: node, plan["$id"]: plan}
-resolver = jsonschema.RefResolver.from_schema(upgrade, store=store)
-upgrade_value = {
-    "schemaVersion": "blazn.dev/node-broker-upgrade/v2",
-    "owner": "blazn-poc",
-    "host": "test",
-    "phase": "complete",
-    "createdAt": "2026-08-22T08:00:00Z",
-    "inputs": {
-        "mainReceipt": {"path": "/a", "backupPath": "/b", "digest": digest},
-        "environment": {"path": "/c", "backupPath": "/d", "digest": digest},
-        "buildReceipt": {"path": "/e", "backupPath": "/f", "digest": "", "present": False},
-        "sourceDigest": "",
-        "configDigest": digest,
-    },
-    "nodeBroker": node_value,
-    "nodePlan": plan_value,
-}
-jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate(upgrade_value)
-retry_value = {
-    "schemaVersion": "blazn.dev/node-broker-upgrade-retry/v1",
-    "owner": "blazn-poc",
-    "host": "test",
-    "correlationId": "retry-1",
-    "phase": "receipt-retained",
-    "startedAt": "2026-08-24T08:00:00Z",
-    "updatedAt": "2026-08-24T08:01:00Z",
-    "previousReceipt": {"sourcePath": "/receipt", "retainedPath": "/history/receipt.json", "digest": digest},
-    "previousInputs": {"sourcePath": "/inputs", "retainedPath": "/history/inputs"},
-    "rollbackEvidencePath": "/history/rollback",
-    "rollbackEvidenceDigest": digest,
-}
-jsonschema.Draft202012Validator(retry).validate(retry_value)
-jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate({
-    **upgrade_value,
-    "retry": {
-        "correlationId": "retry-1",
-        "previousReceipt": {"path": "/history/receipt.json", "digest": digest},
-        "previousInputsPath": "/history/inputs",
-        "rollbackEvidencePath": "/history/rollback",
-        "rollbackEvidenceDigest": digest,
-    },
-})
-metadata_validator = jsonschema.Draft202012Validator(metadata)
-metadata_value = {
-    "schemaVersion": "blazn.dev/control-plane-backup/v3",
-    "correlationId": "test",
-    "fencingToken": 1,
-    "createdAt": "20260822T080000Z",
-    "database": "blazn",
-    "bucket": "blazn-poc",
-    "configDigest": digest,
-    "controlApi": {
-        "sourceDigest": digest,
-        "image": "blazn-control-api:source-" + "a" * 64,
-        "imageId": digest,
-    },
-    "secretDigests": {"workspace-invitation-hmac-v1": digest},
-    "nodeBrokerReceiptDigest": digest,
-    "nodePlanReceiptDigest": digest,
-}
-metadata_validator.validate(metadata_value)
-metadata_validator.validate({**metadata_value, "schemaVersion": "blazn.dev/control-plane-backup/v4", "microk8sIssuerMaterialDigest": digest})
-v2_metadata_value = {**metadata_value, "schemaVersion": "blazn.dev/control-plane-backup/v2"}
-del v2_metadata_value["nodePlanReceiptDigest"]
-metadata_validator.validate(v2_metadata_value)
 jsonschema.Draft202012Validator(template).validate(json.loads((root / "templates" / "node-install-plan-template-v1.json").read_text()))
-print("Node JSON Schemas and external references validated")
+print("Node JSON Schemas validated")

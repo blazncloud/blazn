@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-agent-harness-client check-agent-harness-generated generate-proxy-contract check-proxy-generated generate-harness-worker-contract check-harness-worker-generated check-harness-worker-cross-build test-harness-worker-image-static generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-identity-root test-infra test-runtime-persistence test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-project-postgres test-run-postgres test-agent-harness-postgres test-agent-run-controller-postgres test-development-postgres test-sandbox-postgres test-sandbox-controller-postgres test-phase5-controller-deployment-static test-phase5-controller-secret-init test-sandbox-io-static release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-agent-harness-client check-agent-harness-generated generate-proxy-contract check-proxy-generated generate-harness-worker-contract check-harness-worker-generated check-harness-worker-cross-build test-harness-worker-image-static generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-infra test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-project-postgres test-run-postgres test-agent-harness-postgres test-agent-run-controller-postgres test-development-postgres test-sandbox-postgres test-sandbox-controller-postgres test-phase5-controller-deployment-static test-phase5-controller-secret-init test-sandbox-io-static release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -80,38 +80,16 @@ test:
 test-control-api:
 	./scripts/test-control-api.sh
 
-test-identity:
-	./infra/identity/test-static.sh
-	shellcheck -x -e SC2016 infra/identity/*.sh
 
-test-identity-root:
-	./infra/identity/test-secret-generation.sh
-	./infra/identity/test-path-and-repair.sh
 
-test-runtime-persistence:
-	./infra/runtime-persistence/test-static.sh
-	shellcheck infra/runtime-persistence/*.sh
+
+# The Compose identity stack these targets tested was removed with the ben1
+# POC; they remain only until .github/workflows/ci.yml stops calling them.
+test-identity test-identity-root:
+	@echo "$@: identity stack removed; nothing to test"
 
 test-infra:
-	./infra/milestone-2/tests/test-preflight.sh
-	./infra/milestone-2/tests/test-contract.sh
-	./infra/milestone-2/tests/test-config-digest.sh
-	./infra/milestone-2/tests/test-live-upgrade.sh
-	./infra/milestone-2/tests/test-workspace-secret-upgrade.sh
-	./infra/milestone-2/tests/test-poc-identity.sh
-	./infra/milestone-2/tests/test-release-promotion.sh
-	./infra/milestone-2/tests/test-control-plane-env.sh
-	./infra/milestone-2/tests/test-control-plane-compose.sh
-	./infra/milestone-2/tests/test-identity-overlay.sh
-	./infra/milestone-2/tests/test-api-build.sh
-	./infra/milestone-2/tests/test-rollback-metadata-policy.sh
-	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh infra/milestone-2/postgres-compat/*.sh
 	./infra/node/tests/test-contract.sh
-	./infra/node/tests/test-secret-create-resume.sh
-	./infra/node/tests/test-plan-materials.sh
-	./infra/node/tests/test-plan-material-rotation.sh
-	./infra/node/tests/test-upgrade-resume.sh
-	./infra/node/tests/test-backup-metadata.sh
 	./infra/node/tests/test-worker-issuer-infra.sh
 	./infra/node/tests/test-postgres-privileges.sh
 	shellcheck infra/node/scripts/*.sh infra/node/tests/*.sh
@@ -186,4 +164,4 @@ test-release:
 test-install:
 	./scripts/test-install.sh
 
-ci: fmt-check check-generated check-workspace-generated check-project-generated check-run-generated check-proxy-generated check-harness-worker-generated check-harness-worker-cross-build check-node-generated check-sandbox-generated test test-control-api test-identity test-runtime-persistence test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-release test-install
+ci: fmt-check check-generated check-workspace-generated check-project-generated check-run-generated check-proxy-generated check-harness-worker-generated check-harness-worker-cross-build check-node-generated check-sandbox-generated test test-control-api test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-release test-install
