@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"time"
@@ -122,7 +123,14 @@ type Installer struct {
 	processIdentity func() string
 	verifyNoSymlink func(string) error
 	lastRollbackErr error
+	drainer         func(context.Context) error
 }
+
+// SetDrainer installs the request that asks the control plane to drain this
+// node's Kubernetes Node before it leaves the cluster (NodeRestriction keeps
+// the node's own credential from changing taints). A failed request is not
+// fatal: the platform's own retirement mark still runs where it is allowed.
+func (i *Installer) SetDrainer(drainer func(context.Context) error) { i.drainer = drainer }
 
 func NewInstaller(platform Platform, state StateStore) *Installer {
 	return &Installer{platform: platform, state: state, now: time.Now, uid: currentUID, processIdentity: func() string { return fmt.Sprintf("pid-%d-start-%d", os.Getpid(), time.Now().UnixNano()) }, verifyNoSymlink: verifyNoSymlinkTraversal}
@@ -677,6 +685,11 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 		// package is rolled back or retained, whichever uninstall chose.
 		if wal.Lifecycle == "uninstall" && plan.Mode == client.NodeModeFresh && !wal.ClusterLeft && entry.Kind == "package" && entry.Target == "microk8s" {
 			if leaver, ok := i.platform.(interface{ LeaveCluster(context.Context) error }); ok {
+				if i.drainer != nil {
+					if err := i.drainer(ctx); err != nil {
+						log.Printf("node uninstall: control-plane drain failed; marking the node retired locally: %v", err)
+					}
+				}
 				if err := leaver.LeaveCluster(ctx); err != nil {
 					return residues, fmt.Errorf("leave the cluster before removing the node runtime: %w", err)
 				}

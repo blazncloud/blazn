@@ -217,6 +217,7 @@ func (c *CommandRuntime) Uninstall(ctx context.Context, removeManagedRuntime boo
 	if err := c.configureInstaller(profile); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
+	c.Installer.SetDrainer(func(ctx context.Context) error { return c.drainNode(ctx, state, identity) })
 	receipt, err := c.Installer.Uninstall(ctx, state.Exchange.Plan, state.Exchange.Identity, identity, removeManagedRuntime)
 	if err != nil {
 		return receipt, err
@@ -237,6 +238,30 @@ func (c *CommandRuntime) beginAndResumeUninstallCleanup(ctx context.Context, pla
 		return err
 	}
 	return c.resumeUninstallCleanup(ctx, store, journal)
+}
+
+type drainAPI interface {
+	DrainNode(context.Context, string, client.NodeDrainRequest) (client.NodeDrainResponse, error)
+}
+
+// drainNode asks the control plane to mark this node's own Kubernetes Node
+// retired and unschedulable, proven by the node identity.
+func (c *CommandRuntime) drainNode(ctx context.Context, state RuntimeState, identity Identity) error {
+	if c.Service == nil || state.KubernetesBinding == nil {
+		return errors.New("node drain requires an active Kubernetes binding")
+	}
+	api, ok := c.Service.api.(drainAPI)
+	if !ok {
+		return errors.New("node drain API is unavailable")
+	}
+	request := client.NodeDrainRequest{NodeID: state.Exchange.Plan.NodeID, IdentityGeneration: state.Exchange.Identity.Generation,
+		SentAt: time.Now().UTC().Format(time.RFC3339), KubernetesBinding: *state.KubernetesBinding}
+	proof, err := nodeProof(identity.PrivateKey, "blazn-node-drain-v1", request)
+	if err != nil {
+		return err
+	}
+	_, err = api.DrainNode(ctx, proof, request)
+	return err
 }
 
 type retirementAPI interface {

@@ -116,6 +116,20 @@ type NodeRetirementRequest struct {
 	Receipt NodeInstallReceipt `json:"receipt"`
 }
 
+// NodeDrainRequest asks the control plane to mark the node's own bound
+// Kubernetes Node retired and unschedulable before it leaves the cluster. It
+// is proven by the node identity over blazn-node-drain-v1.
+type NodeDrainRequest struct {
+	NodeID             string            `json:"nodeId"`
+	IdentityGeneration int64             `json:"identityGeneration"`
+	SentAt             string            `json:"sentAt"`
+	KubernetesBinding  KubernetesBinding `json:"kubernetesBinding"`
+}
+
+type NodeDrainResponse struct {
+	Drained bool `json:"drained"`
+}
+
 type NodeActivationRequest struct {
 	ExpectedVersion    int64              `json:"expectedVersion"`
 	Receipt            NodeInstallReceipt `json:"receipt"`
@@ -2470,6 +2484,18 @@ func (c *Client) RetireNode(ctx context.Context, nodeProof, idempotencyKey strin
 		return output, fmt.Errorf("node retirement request is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/retirements", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) DrainNode(ctx context.Context, nodeProof string, request NodeDrainRequest) (NodeDrainResponse, error) {
+	var output NodeDrainResponse
+	if nodeProof == "" || !nodeUUIDPattern.MatchString(request.NodeID) || request.IdentityGeneration < 1 || !validKubernetesBinding(request.KubernetesBinding) {
+		return output, fmt.Errorf("node drain request is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, request.SentAt); err != nil {
+		return output, fmt.Errorf("node drain sentAt is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/drains", "", nodeProof, "", request, &output, http.StatusOK)
 	return output, err
 }
 
