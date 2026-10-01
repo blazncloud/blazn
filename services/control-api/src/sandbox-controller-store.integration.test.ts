@@ -268,6 +268,34 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.deepEqual(refusedDelete.rows[0], { status: "recovery_required", cleanup_complete: false, code: "prior_cleanup_unverified" });
     assert.equal((await admin.query("SELECT has_function_privilege('blazn_sandbox_controller','sandbox_controller_finalize_stopped_delete_v1(uuid,text,uuid)','EXECUTE') AS allowed")).rows[0]?.allowed, false);
 
+    // M4.8: a create that failed before its backend was recorded leaves no
+    // stop receipt. Its own failed receipt is accepted as delete proof only
+    // when the controller reported the backend destroyed and absent.
+    const failCreateThenDelete = async (worker: string, destroyed: boolean, withArtifact = false) => {
+      const sandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested", withArtifact });
+      const createId = await insertOperation(admin, workspaceId, sandboxId, userId, "create");
+      const claimed = await first.claim(worker, 30);
+      assert.equal(claimed?.operationId, createId);
+      assert.equal(await first.complete(createId, worker, claimed!.leaseToken, { status: "failed",
+        expectedBackendUid: null, expectedBackendResourceVersion: null, expectedWorkloadDigest: null, expectedObservationDigest: null,
+        cleanupComplete: destroyed, artifactExportComplete: false, grantsRevoked: destroyed, backendDestroyed: destroyed,
+        artifactIds: [], warningCodes: [], error: { code: "backend_failure", message: "Pod was never scheduled", requestId: randomUUID() } }), true);
+      await admin.query("UPDATE sandboxes SET state='deleting',desired_state='deleted',version=version+1 WHERE id=$1", [sandboxId]);
+      const deleteId = await insertOperation(admin, workspaceId, sandboxId, userId, "delete");
+      assert.equal(await first.claim(`${worker}-delete`, 30), undefined);
+      const outcome = await admin.query(`SELECT s.state,r.status,r.error->>'code' AS code,r.result
+        FROM sandboxes s JOIN sandbox_operations o ON o.sandbox_id=s.id
+        JOIN sandbox_operation_terminal_receipts r ON r.id=o.terminal_receipt_id WHERE o.id=$1`, [deleteId]);
+      const events = await admin.query("SELECT count(*)::int AS count FROM sandbox_events WHERE sandbox_id=$1 AND type='sandbox.deleted'", [sandboxId]);
+      return { ...outcome.rows[0], deletedEvents: events.rows[0]?.count };
+    };
+    assert.deepEqual(await failCreateThenDelete("controller-failed-create", true),
+      { state: "deleted", status: "succeeded", code: null, result: { artifactIds: [], warnings: [] }, deletedEvents: 1 });
+    assert.deepEqual(await failCreateThenDelete("controller-failed-create-undestroyed", false),
+      { state: "deleting", status: "recovery_required", code: "prior_cleanup_unverified", result: null, deletedEvents: 0 });
+    assert.deepEqual(await failCreateThenDelete("controller-failed-create-required-artifact", true, true),
+      { state: "deleting", status: "recovery_required", code: "prior_cleanup_unverified", result: null, deletedEvents: 0 });
+
     // Recover the pre-fix failure mode: the old controller exhausts its claim
     // lease while decoding delete-after-stop, then a fresh delete retries it.
     const retryStoppedSandbox = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped", version: 2,

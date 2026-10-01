@@ -192,7 +192,6 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-16), [
-    "026_development_sandbox_evidence.sql",
     "027_controller_role_public_grants.sql",
     "028_development_candidate_image_binding.sql",
     "029_public_function_hardening_boundary.sql",
@@ -208,6 +207,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "039_email_login_codes.sql",
     "040_agent_run_execution.sql",
     "041_agent_node_registry_placement.sql",
+    "042_sandbox_delete_after_failed_create.sql",
   ]);
 });
 
@@ -220,6 +220,17 @@ test("Agent node placement resolves the node UID from the Blazn registry",async(
   assert.match(sql,/RETURN public\.sandbox_controller_record_agent_node_observation\(/);
   assert.match(sql,/REVOKE ALL ON FUNCTION sandbox_controller_record_agent_node_placement\(uuid,text,uuid,text,text,text,text,text\)[\s\S]*FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller,blazn_agent_run_controller/);
   assert.match(sql,/GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_placement\(uuid,text,uuid,text,text,text,text,text\) TO blazn_sandbox_controller;\s*$/);
+});
+
+test("delete after a failed create accepts only a destroyed-backend receipt",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/042_sandbox_delete_after_failed_create.sql"),"utf8");
+  assert.match(sql,/previous\.type='create' AND previous\.status='failed'/);
+  assert.match(sql,/r\.cleanup_complete AND r\.grants_revoked AND r\.backend_destroyed AND NOT r\.backend_present/);
+  assert.match(sql,/NOT EXISTS\(SELECT 1 FROM public\.sandbox_workload_admissions a WHERE a\.sandbox_id=target\.sandbox_id\)/);
+  assert.match(sql,/'prior_cleanup_unverified'/);
+  assert.match(sql,/REVOKE ALL ON FUNCTION sandbox_controller_finalize_stopped_delete_v1\(uuid,text,uuid\)\s+FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller;/);
+  assert.doesNotMatch(sql,/GRANT /);
 });
 
 test("warning-free artifact cleanup is canonical at the database boundary",async()=>{
