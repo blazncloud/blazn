@@ -27,3 +27,31 @@ How it works:
 - Every run creates new accounts and a new workspace, so runs are independent.
   Test users and workspaces remain in the development database.
 - It emits JSON with one entry per step and exits after the first failure.
+
+## Sandbox lifecycle
+
+`sandbox-lifecycle.py` qualifies sandboxes on a registered node (plan item
+M4.2). With a CLI that is already signed in, it runs
+
+    create -> ready -> exec -> upload -> download -> stop -> delete
+
+and compares the SHA-256 of the downloaded file with the uploaded one. It then
+proves nothing is left behind: no Pod or Sandbox object labeled with the
+sandbox ID (read-only `kubectl`), and no access grant still `active`
+(read-only `psql` on the hosted database).
+
+```sh
+python3 infra/qualification/sandbox-lifecycle.py \
+  --workspace WORKSPACE_ID --template NAME@VERSION \
+  --ssh "-J ben1 blazn@NODE_ADDRESS" --blazn .local/bin/blazn \
+  --psql "ssh DATABASE_HOST sudo -n -u postgres psql -d blazn_test -At" \
+  --repeat 2 > report.json
+```
+
+Omit `--ssh` to use a CLI on the local machine. The report lists every step
+per iteration and the node each sandbox ran on. A failed run stops and deletes
+its sandbox unless `--keep-failed` is given.
+
+`test-sandbox-lifecycle.sh` checks the script itself against a fake CLI,
+cluster and database: a healthy run passes, and a leftover Pod, an active
+grant, or a missing grant check each fail.
