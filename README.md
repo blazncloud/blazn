@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/blazncloud/blazn/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/blazncloud/blazn/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/blazncloud/blazn/releases/tag/v0.1.0-poc.113"><img alt="Release v0.1.0-poc.113" src="https://img.shields.io/badge/release-v0.1.0--poc.113-f97316.svg"></a>
+  <a href="https://github.com/blazncloud/blazn/releases/tag/v0.1.0-poc.132"><img alt="Release v0.1.0-poc.132" src="https://img.shields.io/badge/release-v0.1.0--poc.132-f97316.svg"></a>
   <img alt="Go 1.26.2 or newer" src="https://img.shields.io/badge/go-%3E%3D1.26.2-101010.svg">
 </p>
 
@@ -37,8 +37,8 @@ The installer requires an immutable version and verifies the signed checksum man
 
 ```bash
 curl -fL --progress-bar --show-error \
-  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.113/install.sh |
-  BLAZN_VERSION=v0.1.0-poc.113 sh
+  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.132/install.sh |
+  BLAZN_VERSION=v0.1.0-poc.132 sh
 ```
 
 The default destination is `~/.local/bin`. When needed, the installer adds that
@@ -56,6 +56,10 @@ blazn version
 blazn doctor
 blazn help
 ```
+
+The CLI talks to the hosted development deployment, `https://api.blazn.frontro.com`,
+by default. [Try the hosted environment](docs/delivery/try-the-hosted-environment.md)
+walks through sign-up, workspaces, registering a node and creating a sandbox.
 
 ### Build from source
 
@@ -82,6 +86,7 @@ blazn version --output json
 Authenticated commands require an HTTPS Blazn API origin. Loopback HTTP is available only for explicit local development.
 
 ```bash
+# Optional: another deployment. The default is https://api.blazn.frontro.com
 export BLAZN_API_URL="https://blazn.example.com"
 blazn auth login
 blazn auth status
