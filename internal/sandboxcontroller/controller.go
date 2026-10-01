@@ -729,7 +729,7 @@ func validateExisting(item WorkItem, state BackendState) error {
 	if state.Record.UID != *item.BackendUID || state.Record.ResourceVersion != *item.BackendResourceVersion ||
 		state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace ||
 		state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy ||
-		state.Record.QueueName != sandboxcontrol.QueueName || state.AdmissionObservation == nil ||
+		!sandboxcontrol.IsBlaznQueue(state.Record.QueueName) || state.AdmissionObservation == nil ||
 		item.AdmissionObservation == nil || !reflect.DeepEqual(*state.AdmissionObservation, *item.AdmissionObservation) {
 		return fmt.Errorf("existing backend tuple mismatch")
 	}
@@ -752,7 +752,7 @@ func validateDeleting(item WorkItem, state BackendState) error {
 	if err := sandboxcontrol.ValidateAdmissionObservation(*state.AdmissionObservation); err != nil ||
 		state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace ||
 		state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy ||
-		state.Record.QueueName != sandboxcontrol.QueueName {
+		!sandboxcontrol.IsBlaznQueue(state.Record.QueueName) {
 		return fmt.Errorf("deleting backend identity is invalid: %w", err)
 	}
 	return nil

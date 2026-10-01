@@ -158,7 +158,7 @@ func artifactRuntimeFixture(t *testing.T) (WorkItem, sandboxcontrol.AdmissionObs
 	t.Helper()
 	workspaceID, sandboxID := "40000000-0000-4000-8000-000000000001", "30000000-0000-4000-8000-000000000001"
 	record := sandboxcontrol.SandboxRecord{Name: sandboxID, Namespace: sandboxcontrol.Namespace, UID: "sandbox-uid", ResourceVersion: "sandbox-rv",
-		WorkspaceID: workspaceID, OwnerID: "owner-1", QueueName: sandboxcontrol.QueueName, State: sandboxcontrol.StateReady,
+		WorkspaceID: workspaceID, OwnerID: "owner-1", QueueName: sandboxcontrol.LocalQueue(), State: sandboxcontrol.StateReady,
 		ArtifactContractDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	identity := sandboxcontrol.WorkloadIdentity{APIVersion: sandboxcontrol.AdmissionAPIVersion, Namespace: sandboxcontrol.Namespace,
 		Name: "workload.sandbox", UID: "workload-uid", ResourceVersion: "workload-rv", ClusterQueue: "poc-cluster",

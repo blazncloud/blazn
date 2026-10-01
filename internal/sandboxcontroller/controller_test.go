@@ -778,7 +778,7 @@ func createFixture(t *testing.T) (WorkItem, BackendState) {
 	t.Helper()
 	record := sandboxcontrol.SandboxRecord{Name: "30000000-0000-4000-8000-000000000001", Namespace: sandboxcontrol.Namespace,
 		UID: "backend-uid", ResourceVersion: "resource-version-1", WorkspaceID: "40000000-0000-4000-8000-000000000001",
-		OwnerID: "owner-1", QueueName: sandboxcontrol.QueueName, State: sandboxcontrol.StateReady,
+		OwnerID: "owner-1", QueueName: sandboxcontrol.LocalQueue(), State: sandboxcontrol.StateReady,
 		ArtifactContractDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	identity := sandboxcontrol.WorkloadIdentity{APIVersion: sandboxcontrol.AdmissionAPIVersion,
 		Namespace: sandboxcontrol.Namespace, Name: "workload.sandbox-1", UID: "admission-uid",
