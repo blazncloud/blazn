@@ -13,8 +13,8 @@ by orchestration only, so do not run untrusted code or use sensitive data.
 
 ```sh
 curl -fL --progress-bar --show-error \
-  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.132/install.sh |
-  BLAZN_VERSION=v0.1.0-poc.132 sh
+  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.133/install.sh |
+  BLAZN_VERSION=v0.1.0-poc.133 sh
 blazn version
 ```
 
