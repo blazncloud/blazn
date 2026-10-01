@@ -6,7 +6,7 @@ set -eu
 #
 #   infra/frontro/deploy-api.sh [--migrate] [--no-rollout] [--deployment api-dev]
 #
-#   BLAZN_BUILD_HOST    host with Docker that builds and pushes (default ben5)
+#   BLAZN_BUILD_HOST    host with Docker and Go that builds and pushes (default ben5)
 #   BLAZN_CLUSTER_HOST  host with MicroK8s admin kubectl (default ben1)
 #
 # Credentials are minted per run from Kubernetes service-account tokens and
@@ -49,6 +49,12 @@ printf 'building %s on %s\n' "$image" "$BUILD_HOST"
 ssh "$BUILD_HOST" "mkdir -p $remote"
 rsync -a --delete --exclude node_modules --exclude dist "$ROOT/services/control-api/" "$BUILD_HOST:$remote/control-api/"
 rsync -a --delete "$ROOT/infra/frontro/scripts/" "$BUILD_HOST:$remote/scripts/"
+# The Agent Run controller ships the in-Sandbox harness for both architectures.
+rsync -a --delete "$ROOT/go.mod" "$ROOT/go.sum" "$BUILD_HOST:$remote/agent-src/"
+rsync -a --delete "$ROOT/cmd/blazn-agent/" "$BUILD_HOST:$remote/agent-src/cmd/blazn-agent/"
+rsync -a --delete "$ROOT/internal/sandboxagent/" "$BUILD_HOST:$remote/agent-src/internal/sandboxagent/"
+# shellcheck disable=SC2029
+ssh "$BUILD_HOST" "cd $remote/agent-src && for arch in amd64 arm64; do CGO_ENABLED=0 GOOS=linux GOARCH=\$arch go build -buildvcs=false -trimpath -ldflags='-s -w' -o ../control-api/agent/blazn-agent-linux-\$arch ./cmd/blazn-agent || exit 1; done"
 # shellcheck disable=SC2029
 ssh "$BUILD_HOST" "sudo -n docker build -q -t $image $remote/control-api >$remote/build.log 2>&1 || { tail -20 $remote/build.log; exit 1; }"
 
@@ -89,7 +95,14 @@ if [ "$rollout" = false ]; then
 fi
 
 # shellcheck disable=SC2029
-ssh "$CLUSTER_HOST" "$KUBECTL -n $NAMESPACE set image deployment/$deployment api=$reference >/dev/null && $KUBECTL -n $NAMESPACE rollout status deployment/$deployment --timeout=240s"
+# The Agent Run controller, where deployed, runs the same image beside the API.
+containers=api=$reference
+# shellcheck disable=SC2029
+if ssh "$CLUSTER_HOST" "$KUBECTL -n $NAMESPACE get deployment/$deployment -o jsonpath='{.spec.template.spec.containers[*].name}'" | tr ' ' '\n' | grep -qx agent-run-controller; then
+  containers="$containers agent-run-controller=$reference"
+fi
+# shellcheck disable=SC2029
+ssh "$CLUSTER_HOST" "$KUBECTL -n $NAMESPACE set image deployment/$deployment $containers >/dev/null && $KUBECTL -n $NAMESPACE rollout status deployment/$deployment --timeout=240s"
 status=$(curl --noproxy '*' -fsS -m 20 "$health")
 printf '%s\n' "$status"
 case "$status" in
