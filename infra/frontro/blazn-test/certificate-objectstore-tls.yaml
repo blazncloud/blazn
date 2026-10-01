@@ -1,0 +1,21 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: objectstore-tls
+  namespace: blazn-test
+spec:
+  dnsNames:
+  - objectstore
+  - objectstore.blazn-test.svc.cluster.local
+  - localhost
+  duration: 2160h
+  ipAddresses:
+  - 127.0.0.1
+  issuerRef:
+    kind: Issuer
+    name: test-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  renewBefore: 720h
+  secretName: objectstore-tls

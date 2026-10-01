@@ -51,6 +51,9 @@ The Agent Run controller's database role is created by the migrations without
 a login. On the hosted database it was given `LOGIN`, a password, and
 `pg_hba.conf` lines next to the other `blazn-test` entries.
 
+The TLS Secrets `objectstore-tls`, `registry-tls` and `test-ca` are issued by
+cert-manager from the Issuers and Certificates in `infra/frontro/blazn-test`.
+
 On `ben1`, the broker's secrets are in `/etc/blazn/node-broker-frontro/secrets`
 (root-only) and the issuer's in `/etc/blazn/microk8s-worker-issuer`.
 
@@ -184,17 +187,26 @@ and only then unhold and refresh the snap on `ben1`.
 - The ZITADEL stack in `blazn-identity-dev` (API, login UI, Postgres). The API
   runs with no identity provider.
 
-Their manifests are in git history (`infra/frontro` at commit `2e5215fb`) and
-can be re-applied. Kept on purpose, because deleting them is not reversible:
-the PersistentVolumeClaims `database` and `bootstrap` and the Secrets
-`database-tls` and `identity-ca` in `blazn-identity-dev`. Delete them once
-nobody needs the old ZITADEL data.
+Their manifests are in git history (`infra/frontro` at commit `2e5215fb`).
+ZITADEL's volumes (`database`, `bootstrap`), its cert-manager Certificates and
+Issuers, and the TLS Secrets they produced were deleted afterwards, so its
+data is gone and a restore would start from an empty identity store.
 
-The shared gateway still has routes for `blazn-test.frontro.com` and for the
-ZITADEL paths on `api.blazn.frontro.com` (`/ui/v2/login`, `/oauth/v2/`,
-`/oidc/v1/`, `/.well-known/openid-configuration`); they now answer 502 or 500. They
-are listed in `infra/frontro/edge/blazn-routes.yaml` and should be removed
-from the gateway's ConfigMap by whoever next changes it.
+The Blazn routes for the retired services were removed from the shared
+gateway's ConfigMap (`moments-direct/moments-direct-gateway`, key
+`dynamic.yml`). The previous file is saved on `ben1` as
+`~/blazn-backups/moments-direct-gateway-dynamic-before-20261001.yml`. The
+gateway had not been restarted when this was written, so the stale routes
+still answer (502 or 500) until its next restart.
+
+**The gateway only reads that file at startup.** Traefik is configured with
+`--providers.file.filename`, which does not notice a ConfigMap update (the
+update arrives as a symlink swap, and Traefik watches for the file's own
+name). A change to `dynamic.yml` therefore takes effect at the gateway's next
+restart. The gateway is one replica with the `Recreate` strategy and also
+serves Moments, The Archive and retailer-apply, so a restart is a few seconds
+of downtime for all of them. Validate a changed file first by loading it in
+the same Traefik image and listing `/api/http/routers`.
 
 ## Known hardening gaps
 
