@@ -89,6 +89,7 @@ test-identity test-identity-root:
 	@echo "$@: identity stack removed; nothing to test"
 
 test-infra:
+	./infra/qualification/test-sandbox-lifecycle.sh
 	./infra/node/tests/test-contract.sh
 	./infra/node/tests/test-worker-issuer-infra.sh
 	./infra/node/tests/test-postgres-privileges.sh
