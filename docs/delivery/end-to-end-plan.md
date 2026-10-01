@@ -120,12 +120,12 @@ Delivered for sandboxes on Blazn nodes (2026-10-01):
 |---|---|
 | M4.1 ✅ Publish a first approved template to `api-dev` | Done 2026-10-01: `coding-agent@go-1.26.2-node-22.19.0-ghcr-1`, images pinned by digest on public GHCR |
 | M4.2 ✅ Qualify the lifecycle on a Blazn node: create → ready → exec → upload/download → stop → delete | Passed twice 2026-10-01 on `blazn-node-qual-1` with `infra/qualification/sandbox-lifecycle.py` (13/13 checks per iteration, zero residual Pods, Sandboxes or active grants) |
-| M4.3 Placement: a sandbox lands only on eligible, active nodes in the owner's workspace | A node from another workspace is never selected; a quarantined node is never selected |
+| M4.3 ✅ Placement: a sandbox lands only on eligible, active nodes of its own workspace | Live 2026-10-01 (#248/#249): the issuer labels each activated node `node-restriction.kubernetes.io/blazn-workspace=<id>` and refuses rebinding; sandbox Pods select it; the boundary rejects a foreign workspace selector. Tamper-proof only once NodeRestriction is enforced (M0.9) |
 | M4.4 Policy denials: network egress, resource caps, expired or revoked grants | Each denial is observed and audited |
 | M4.5 `sandbox watch` replays stop, expiry and delete events (known gap) | Watch shows the terminal event |
 | M4.6 Hardened runtime (gVisor or Kata RuntimeClass) before any multi-tenant or public use | The RuntimeClass is qualified; untrusted-code isolation is documented |
-| M4.7 Give Blazn its own Kueue ClusterQueue and ResourceFlavor (node label `blazn.dev/sandbox-eligible`) instead of sharing `m1-light`, whose flavor injects `frontro.io/agent-workloads=true`; until then activation must add that label | A fresh node runs a sandbox with no manual labelling |
-| M4.8 A create that fails before the controller records its backend (for example an unschedulable Pod) leaves an untracked Sandbox and Pod; stop and delete then end in `recovery_required` (`prior_cleanup_unverified`) | Such a failure is cleaned up through the normal delete path with no orphan |
+| M4.7 ✅ Dedicated Kueue ResourceFlavor `blazn-sandbox` and ClusterQueue `blazn-sandboxes` (no cohort) | Live 2026-10-01: boundary transaction `88ae584b` adds LocalQueue `blazn-sandboxes`; the controller routes Pods there; lifecycle qualification passed 26/26 with no manual node labels |
+| M4.8 A create that fails before the controller records its backend leaves an untracked Sandbox and Pod; stop and delete then end in `recovery_required` (`prior_cleanup_unverified`). The common trigger (unschedulable Pods from the shared flavor) is gone with M4.7; the remaining fix needs a database proof path so a failed create can destroy its unrecorded backend and its record can be deleted | Such a failure is cleaned up through the normal delete path with no orphan |
 | M4.9 Make GHCR images the default: point `infra/agent-sandbox` controller rendering and the example templates at `ghcr.io/blazncloud/*`, and run `sandbox-images.yml` on release | No sandbox path depends on `registry.blaze.internal` |
 
 ## M5 — Model access
