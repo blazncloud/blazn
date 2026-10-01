@@ -54,11 +54,18 @@ validate_uid_journal() {
   if [ ! -f "$uids" ] || [ -L "$uids" ] || [ "$(stat -c '%u:%a:%h' "$uids")" != 0:600:1 ]; then
     printf 'owned UID journal metadata is unsafe\n' >&2; return 1
   fi
+  # Transactions sealed before the Node observer RBAC was removed journaled its
+  # ClusterRole and ClusterRoleBinding; teardown still accepts that order.
   jq -e '
-    ["serviceaccount/blazn-sandbox-controller","role/blazn-sandbox-controller","clusterrole/blazn-sandbox-controller-node-observer","deployment/blazn-sandbox-controller","service/blazn-sandbox-access","networkpolicy/blazn-sandbox-controller-default-deny","networkpolicy/blazn-sandbox-controller-access-ingress","networkpolicy/blazn-sandbox-controller-egress","rolebinding/blazn-sandbox-controller","clusterrolebinding/blazn-sandbox-controller-node-observer"] as $allowed |
-    (to_entries) as $entries | ($entries | length) <= ($allowed | length) and
-    all(range(0; ($entries | length)); $entries[.].key == $allowed[.]) and
+    ["serviceaccount/blazn-sandbox-controller","role/blazn-sandbox-controller","deployment/blazn-sandbox-controller","service/blazn-sandbox-access","networkpolicy/blazn-sandbox-controller-default-deny","networkpolicy/blazn-sandbox-controller-access-ingress","networkpolicy/blazn-sandbox-controller-egress","rolebinding/blazn-sandbox-controller"] as $current |
+    ["serviceaccount/blazn-sandbox-controller","role/blazn-sandbox-controller","clusterrole/blazn-sandbox-controller-node-observer","deployment/blazn-sandbox-controller","service/blazn-sandbox-access","networkpolicy/blazn-sandbox-controller-default-deny","networkpolicy/blazn-sandbox-controller-access-ingress","networkpolicy/blazn-sandbox-controller-egress","rolebinding/blazn-sandbox-controller","clusterrolebinding/blazn-sandbox-controller-node-observer"] as $legacy |
+    (to_entries) as $entries |
+    any($current, $legacy; . as $allowed | ($entries | length) <= ($allowed | length) and
+      all(range(0; ($entries | length)); $entries[.].key == $allowed[.])) and
     all($entries[]; .value | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$uids" >/dev/null || { printf 'owned UID journal schema is invalid\n' >&2; return 1; }
+}
+legacy_journaled() {
+  [ -n "$(jq -r --arg key "$1" '.[$key] // empty' "$uids")" ]
 }
 phase=$(cat "$transaction/phase")
 anchor_name=blazn-phase5-anchor-$BLAZN_PHASE5_TRANSACTION_ID
@@ -166,9 +173,15 @@ delete_owned() {
   return 0
 }
 # Revoke bindings and roles before deleting non-authority objects.
-delete_owned clusterrolebinding blazn-sandbox-controller-node-observer - clusterrolebinding/blazn-sandbox-controller-node-observer /apis/rbac.authorization.k8s.io/v1/clusterrolebindings/blazn-sandbox-controller-node-observer
+# A legacy transaction may own the removed Node observer RBAC; delete it only
+# when this transaction journaled its UID.
+if legacy_journaled clusterrolebinding/blazn-sandbox-controller-node-observer; then
+  delete_owned clusterrolebinding blazn-sandbox-controller-node-observer - clusterrolebinding/blazn-sandbox-controller-node-observer /apis/rbac.authorization.k8s.io/v1/clusterrolebindings/blazn-sandbox-controller-node-observer
+fi
+if legacy_journaled clusterrole/blazn-sandbox-controller-node-observer; then
+  delete_owned clusterrole blazn-sandbox-controller-node-observer - clusterrole/blazn-sandbox-controller-node-observer /apis/rbac.authorization.k8s.io/v1/clusterroles/blazn-sandbox-controller-node-observer
+fi
 delete_owned rolebinding blazn-sandbox-controller blazn-poc-sandboxes rolebinding/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller
-delete_owned clusterrole blazn-sandbox-controller-node-observer - clusterrole/blazn-sandbox-controller-node-observer /apis/rbac.authorization.k8s.io/v1/clusterroles/blazn-sandbox-controller-node-observer
 delete_owned role blazn-sandbox-controller blazn-poc-sandboxes role/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/roles/blazn-sandbox-controller
 delete_owned deployment blazn-sandbox-controller blazn-poc-system deployment/blazn-sandbox-controller /apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller
 delete_owned service blazn-sandbox-access blazn-poc-system service/blazn-sandbox-access /api/v1/namespaces/blazn-poc-system/services/blazn-sandbox-access
@@ -188,12 +201,16 @@ fi
 phase4c_stop_uid_proxy
 trap - EXIT HUP INT TERM
 
+owned_refs='deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system'
+for legacy_ref in clusterrole/blazn-sandbox-controller-node-observer clusterrolebinding/blazn-sandbox-controller-node-observer; do
+  if legacy_journaled "$legacy_ref"; then owned_refs="$owned_refs $legacy_ref:-"; fi
+done
 gc_attempts=${BLAZN_CONTROLLER_GC_ATTEMPTS:-60}
 case "$gc_attempts" in ''|*[!0-9]*|0) gc_attempts=60 ;; esac
 attempt=0
 while :; do
   pending=0
-  for gone in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
+  for gone in $owned_refs; do
     gone_ref=${gone%%:*}; gone_ns=${gone#*:}; gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
     expected_uid=$(jq -r --arg key "$gone_ref" '.[$key] // empty' "$uids")
     observe_object "$gone_kind" "$gone_name" "$gone_ns"
@@ -211,7 +228,7 @@ while :; do
   sleep 2
 done
 if [ "$pending" -ne 0 ]; then
-  for gone in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
+  for gone in $owned_refs; do
     gone_ref=${gone%%:*}; gone_ns=${gone#*:}; gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
     observe_object "$gone_kind" "$gone_name" "$gone_ns"
     [ "$observed_state" = absent ] || printf '%s\n' "$gone_ref" >>"$attempt_residual"

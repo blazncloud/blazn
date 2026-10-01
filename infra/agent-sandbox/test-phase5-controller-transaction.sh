@@ -295,7 +295,7 @@ run_tool install-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase complete
 [ -e "$FAKE_STATE/scaled1" ]
-jq -e 'length == 10' "$transaction/owned-uids.json" >/dev/null
+jq -e 'length == 8' "$transaction/owned-uids.json" >/dev/null
 run_tool install-controller.sh
 [ "$last_code" -eq 0 ]
 grep -Fq 'already complete' "$tmp/last-out"
@@ -385,12 +385,30 @@ run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
 [ -e "$FAKE_STATE/scaled0" ]
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 11 ]
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 9 ]
 grep -Fq '"uid": "11111111-1111-4111-8111-111111111111"' "$FAKE_STATE/delete-requests.log"
 grep -Fq '"uid": "77777777-7777-4777-8777-777777777777"' "$FAKE_STATE/delete-requests.log"
 grep -Fq '"uid": "88888888-8888-4888-8888-888888888888"' "$FAKE_STATE/delete-requests.log"
+grep -Fq '"uid": "33333333-3333-4333-8333-333333333333"' "$FAKE_STATE/delete-requests.log"
+if grep -Fq 'node-observer' "$FAKE_STATE/delete-requests.log" "$FAKE_STATE/calls.log"; then printf 'a current transaction must never address Node observer RBAC\n' >&2; exit 1; fi
+
+# T6f: a legacy transaction that journaled the removed Node observer
+# ClusterRole/ClusterRoleBinding still tears them down by exact UID.
+reset_state; new_transaction
+test_case 'T6f legacy Node observer journal teardown'
+run_tool install-controller.sh
+expect_code 0
+jq 'to_entries | .[:2] + [{"key":"clusterrole/blazn-sandbox-controller-node-observer","value":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}] + .[2:] + [{"key":"clusterrolebinding/blazn-sandbox-controller-node-observer","value":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}] | from_entries' "$transaction/owned-uids.json" >"$transaction/owned-uids.json.legacy"
+chmod 0600 "$transaction/owned-uids.json.legacy"; mv "$transaction/owned-uids.json.legacy" "$transaction/owned-uids.json"
+: >"$FAKE_STATE/clusterrole"; : >"$FAKE_STATE/clusterrolebinding"
+run_tool teardown-controller.sh
+expect_code 0
+expect_phase rollback-complete
+expect_delete_count 11
 grep -Fq '"uid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"' "$FAKE_STATE/delete-requests.log"
 grep -Fq '"uid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"' "$FAKE_STATE/delete-requests.log"
+expect_state_file deleted-clusterrole
+expect_state_file deleted-clusterrolebinding
 
 # T6a: rollback intent is durable before scale/delete; a crash at that journal
 # resumes and completes instead of treating the absent/pending anchor as fatal.
@@ -414,7 +432,6 @@ run_tool teardown-controller.sh BLAZN_CONTROLLER_GC_ATTEMPTS=2
 [ "$last_code" -eq 1 ]
 expect_phase rollback-intent
 expect_message 'ambiguous replacement objects were left untouched; recovery is required'
-[ -e "$FAKE_STATE/deleted-clusterrolebinding" ]
 [ -e "$FAKE_STATE/deleted-rolebinding" ]
 [ ! -e "$FAKE_STATE/scaled0" ]
 [ ! -e "$FAKE_STATE/deleted-deployment" ]
@@ -431,7 +448,6 @@ run_tool teardown-controller.sh BLAZN_CONTROLLER_GC_ATTEMPTS=2
 expect_code 1
 expect_phase rollback-intent
 expect_message 'recovery is required'
-[ -e "$FAKE_STATE/deleted-clusterrolebinding" ]
 [ -e "$FAKE_STATE/deleted-rolebinding" ]
 
 # T6ad: even after a successful UID-fenced DELETE, a GC observation error does
@@ -457,7 +473,6 @@ run_tool teardown-controller.sh BLAZN_CONTROLLER_GC_ATTEMPTS=2
 expect_code 1
 expect_phase rollback-intent
 expect_message 'recovery is required'
-[ -e "$FAKE_STATE/deleted-clusterrolebinding" ]
 [ -e "$FAKE_STATE/deleted-rolebinding" ]
 
 # T5b: a transaction stranded at 'scaled' can still be torn down (owned UIDs
@@ -471,7 +486,7 @@ expect_phase scaled
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-expect_delete_count 11
+expect_delete_count 9
 
 # T5c: a crash after the fenced scale succeeds but before the scaled journal
 # resumes from durable scale-intent and accepts the exact replicas=1 object.
@@ -564,8 +579,8 @@ expect_code 0
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-# Nine still-present owned objects, including the anchor, were deleted.
-expect_delete_count 9
+# Seven still-present owned objects, including the anchor, were deleted.
+expect_delete_count 7
 
 # T6c: a resume that already removed only the same-named Role (its sibling
 # ServiceAccount/RoleBinding/Deployment still present) skips the Role by kind,
@@ -578,7 +593,7 @@ expect_code 0
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-expect_delete_count 10
+expect_delete_count 8
 
 # T7: a pre-existing controller Deployment blocks a fresh transaction.
 reset_state; : >"$FAKE_STATE/deployment"; new_transaction
@@ -587,14 +602,18 @@ run_tool install-controller.sh
 expect_code 1
 expect_message 'already exists before transaction'
 
-# T7b: cluster-scoped names are preflighted too; a user-owned global object is
-# never adopted, applied over, inventoried, or deleted.
+# T7b: the controller owns no cluster-scoped RBAC. A same-named legacy Node
+# observer ClusterRole is never preflighted, adopted, applied over, or deleted.
 reset_state; : >"$FAKE_STATE/clusterrole"; : >"$FAKE_STATE/user-clusterrole"; new_transaction
-test_case 'T7b pre-existing cluster RBAC refusal'
+test_case 'T7b unowned legacy Node observer RBAC is untouched'
 run_tool install-controller.sh
-expect_code 1
-expect_message 'clusterrole/blazn-sandbox-controller-node-observer'
-if grep -Fq 'apply --server-side' "$FAKE_STATE/calls.log"; then printf 'pre-existing ClusterRole must block apply\n' >&2; exit 1; fi
+expect_code 0
+expect_phase complete
+run_tool teardown-controller.sh
+expect_code 0
+expect_phase rollback-complete
+if grep -Fq 'node-observer' "$FAKE_STATE/calls.log" "$FAKE_STATE/delete-requests.log"; then printf 'unowned Node observer RBAC must never be addressed\n' >&2; exit 1; fi
+[ ! -e "$FAKE_STATE/deleted-clusterrole" ]
 
 # T7c: a crash after apply but before UID capture never reconstructs ownership
 # or reapplies dependents. Install reports recovery-required.
@@ -657,11 +676,11 @@ test_case 'T7f partial apply anchor-GC recovery'
 run_tool install-controller.sh FAKE_PARTIAL_APPLY=1
 [ "$last_code" -eq 1 ]
 expect_phase apply-intent
-expect_journal_length 8
+expect_journal_length 7
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 9 ]
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 8 ]
 
 # T7g: a crash after the first durable dependent journal deletes that exact UID
 # and then foreground-deletes the anchor. Missing later journal keys are safe.
@@ -677,17 +696,17 @@ expect_phase rollback-complete
 [ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 2 ]
 
 # T7h: a mid-sequence crash after apply but before that response is journaled
-# deletes the four earlier exact UIDs; anchor GC removes the unjournaled Service.
+# deletes the three earlier exact UIDs; anchor GC removes the unjournaled Service.
 reset_state; new_transaction
 test_case 'T7h mid-apply crash recovery'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed-service BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 expect_phase apply-intent
-jq -e 'length == 4 and (has("service/blazn-sandbox-access") | not)' "$transaction/owned-uids.json" >/dev/null
+jq -e 'length == 3 and (has("service/blazn-sandbox-access") | not)' "$transaction/owned-uids.json" >/dev/null
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 5 ]
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 4 ]
 
 # T7i: a missing journaled anchor does not block independent binding-first UID
 # cleanup. The transaction remains recovery-required and is not completed.
@@ -700,8 +719,8 @@ run_tool teardown-controller.sh
 [ "$last_code" -eq 1 ]
 expect_phase rollback-intent
 expect_message 'ambiguous replacement objects were left untouched; recovery is required'
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 10 ]
-grep -Fq 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' "$FAKE_STATE/delete-requests.log"
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 8 ]
+grep -Fq '22222222-2222-4222-8222-222222222222' "$FAKE_STATE/delete-requests.log"
 grep -Fq '33333333-3333-4333-8333-333333333333' "$FAKE_STATE/delete-requests.log"
 
 # T7j: a same-name replacement of the anchor is likewise untouched while all
@@ -714,7 +733,7 @@ run_tool install-controller.sh
 run_tool teardown-controller.sh
 [ "$last_code" -eq 1 ]
 expect_phase rollback-intent
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 10 ]
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 8 ]
 [ ! -e "$FAKE_STATE/deleted-anchor" ]
 
 # T8: path traversal outside the reviewed transaction root is rejected.

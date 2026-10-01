@@ -48,7 +48,7 @@ validate_uid_journal() {
     printf 'owned UID journal metadata is unsafe\n' >&2; return 1
   fi
   jq -e '
-    ["serviceaccount/blazn-sandbox-controller","role/blazn-sandbox-controller","clusterrole/blazn-sandbox-controller-node-observer","deployment/blazn-sandbox-controller","service/blazn-sandbox-access","networkpolicy/blazn-sandbox-controller-default-deny","networkpolicy/blazn-sandbox-controller-access-ingress","networkpolicy/blazn-sandbox-controller-egress","rolebinding/blazn-sandbox-controller","clusterrolebinding/blazn-sandbox-controller-node-observer"] as $allowed |
+    ["serviceaccount/blazn-sandbox-controller","role/blazn-sandbox-controller","deployment/blazn-sandbox-controller","service/blazn-sandbox-access","networkpolicy/blazn-sandbox-controller-default-deny","networkpolicy/blazn-sandbox-controller-access-ingress","networkpolicy/blazn-sandbox-controller-egress","rolebinding/blazn-sandbox-controller"] as $allowed |
     (to_entries) as $entries | ($entries | length) <= ($allowed | length) and
     all(range(0; ($entries | length)); $entries[.].key == $allowed[.]) and
     all($entries[]; .value | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$uids" >/dev/null || { printf 'owned UID journal schema is invalid\n' >&2; return 1; }
@@ -77,13 +77,13 @@ sealed=$transaction/controller.yaml
 if [ -L "$sealed" ] || [ ! -f "$sealed" ] || [ "$(stat -c '%u:%a:%h' "$sealed")" != 0:400:1 ]; then printf 'sealed controller manifest is unsafe\n' >&2; exit 1; fi
 [ "$(sha256sum "$sealed" | awk '{print $1}')" = "$BLAZN_EXPECTED_CONTROLLER_SHA256" ] || { printf 'sealed controller manifest digest mismatch\n' >&2; exit 1; }
 grep -Fq 'replicas: 0' "$sealed" || { printf 'the reviewed controller manifest must start scaled to zero\n' >&2; exit 1; }
-[ "$(grep -Fxc "    blazn.dev/phase5-transaction: $BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -eq 10 ] || { printf 'sealed controller manifest transaction identity mismatch\n' >&2; exit 1; }
-[ "$(grep -Fxc '    uid: BLAZN_PHASE5_ANCHOR_UID' "$sealed")" -eq 10 ] || { printf 'sealed controller anchor placeholders are invalid\n' >&2; exit 1; }
-[ "$(grep -Fxc "    name: blazn-phase5-anchor-$BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -eq 10 ] || { printf 'sealed controller anchor references are invalid\n' >&2; exit 1; }
-if [ "$(grep -Fxc '    controller: false' "$sealed")" -ne 10 ] || [ "$(grep -Fxc '    blockOwnerDeletion: false' "$sealed")" -ne 10 ]; then
+[ "$(grep -Fxc "    blazn.dev/phase5-transaction: $BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -eq 8 ] || { printf 'sealed controller manifest transaction identity mismatch\n' >&2; exit 1; }
+[ "$(grep -Fxc '    uid: BLAZN_PHASE5_ANCHOR_UID' "$sealed")" -eq 8 ] || { printf 'sealed controller anchor placeholders are invalid\n' >&2; exit 1; }
+[ "$(grep -Fxc "    name: blazn-phase5-anchor-$BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -eq 8 ] || { printf 'sealed controller anchor references are invalid\n' >&2; exit 1; }
+if [ "$(grep -Fxc '    controller: false' "$sealed")" -ne 8 ] || [ "$(grep -Fxc '    blockOwnerDeletion: false' "$sealed")" -ne 8 ]; then
   printf 'sealed controller owner references are invalid\n' >&2; exit 1
 fi
-for object_key in serviceaccount role rolebinding clusterrole clusterrolebinding deployment service deny access-ingress egress; do
+for object_key in serviceaccount role rolebinding deployment service deny access-ingress egress; do
   [ "$(grep -Fxc "    blazn.dev/phase5-object: $object_key" "$sealed")" -eq 1 ] || { printf 'sealed controller object selectors are invalid\n' >&2; exit 1; }
 done
 phase=$(cat "$transaction/phase")
@@ -108,14 +108,12 @@ baseline_dir=$transaction/baseline
 baseline_hashes=$baseline_dir/baseline.sha256
 controller_specs='serviceaccount|v1|ServiceAccount|blazn-sandbox-controller|blazn-poc-system|serviceaccount/blazn-sandbox-controller
 role|rbac.authorization.k8s.io/v1|Role|blazn-sandbox-controller|blazn-poc-sandboxes|role/blazn-sandbox-controller
-clusterrole|rbac.authorization.k8s.io/v1|ClusterRole|blazn-sandbox-controller-node-observer|-|clusterrole/blazn-sandbox-controller-node-observer
 deployment|apps/v1|Deployment|blazn-sandbox-controller|blazn-poc-system|deployment/blazn-sandbox-controller
 service|v1|Service|blazn-sandbox-access|blazn-poc-system|service/blazn-sandbox-access
 deny|networking.k8s.io/v1|NetworkPolicy|blazn-sandbox-controller-default-deny|blazn-poc-system|networkpolicy/blazn-sandbox-controller-default-deny
 access-ingress|networking.k8s.io/v1|NetworkPolicy|blazn-sandbox-controller-access-ingress|blazn-poc-system|networkpolicy/blazn-sandbox-controller-access-ingress
 egress|networking.k8s.io/v1|NetworkPolicy|blazn-sandbox-controller-egress|blazn-poc-system|networkpolicy/blazn-sandbox-controller-egress
-rolebinding|rbac.authorization.k8s.io/v1|RoleBinding|blazn-sandbox-controller|blazn-poc-sandboxes|rolebinding/blazn-sandbox-controller
-clusterrolebinding|rbac.authorization.k8s.io/v1|ClusterRoleBinding|blazn-sandbox-controller-node-observer|-|clusterrolebinding/blazn-sandbox-controller-node-observer'
+rolebinding|rbac.authorization.k8s.io/v1|RoleBinding|blazn-sandbox-controller|blazn-poc-sandboxes|rolebinding/blazn-sandbox-controller'
 canonicalize_object() {
   jq -S 'del(.metadata.uid, .metadata.resourceVersion, .metadata.generation, .metadata.creationTimestamp, .metadata.managedFields, .metadata.selfLink, .status, .spec.replicas)'
 }
@@ -130,7 +128,7 @@ canonicalize_admission_comparison() {
 validate_baseline_bundle() {
   if [ ! -d "$baseline_dir" ] || [ -L "$baseline_dir" ] || [ "$(stat -c '%u:%a' "$baseline_dir")" != 0:700 ]; then printf 'controller semantic baseline directory is unsafe\n' >&2; return 1; fi
   if [ ! -f "$baseline_hashes" ] || [ -L "$baseline_hashes" ] || [ "$(stat -c '%u:%a:%h' "$baseline_hashes")" != 0:400:1 ]; then printf 'controller semantic baseline digest file is unsafe\n' >&2; return 1; fi
-  for baseline_key in serviceaccount role clusterrole deployment service deny access-ingress egress rolebinding clusterrolebinding; do
+  for baseline_key in serviceaccount role deployment service deny access-ingress egress rolebinding; do
     baseline_file=$baseline_dir/$baseline_key.json
     if [ ! -f "$baseline_file" ] || [ -L "$baseline_file" ] || [ "$(stat -c '%u:%a:%h' "$baseline_file")" != 0:400:1 ]; then printf 'controller semantic baseline file is unsafe: %s\n' "$baseline_key" >&2; return 1; fi
   done
@@ -172,7 +170,7 @@ scale_deployment_exact() {
   phase4c_stop_uid_proxy; trap - EXIT HUP INT TERM
 }
 if [ "$phase" = sealed ]; then
-  for object in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
+  for object in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
     ref=${object%%:*}; ns=${object#*:}; kind=${ref%%/*}; name=${ref#*/}
     object_absent "$kind" "$name" "$ns" || { printf 'controller object already exists before transaction: %s\n' "$ref" >&2; exit 1; }
   done
@@ -200,7 +198,7 @@ if [ "$phase" = anchor-journaled ]; then
   anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
   [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
   sed "s/BLAZN_PHASE5_ANCHOR_UID/$anchor_uid/g" "$sealed" >"$anchored.tmp"
-  [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -eq 10 ] || { printf 'anchored controller manifest is incomplete\n' >&2; exit 1; }
+  [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -eq 8 ] || { printf 'anchored controller manifest is incomplete\n' >&2; exit 1; }
   ! grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp" || { printf 'anchored controller manifest retains a placeholder\n' >&2; exit 1; }
   mv "$anchored.tmp" "$anchored"; chmod 0400 "$anchored"
   sync -f "$anchored"; sync -f "$transaction"
@@ -221,7 +219,7 @@ EOF
     chmod 0400 "$baseline_dir/$key.json.tmp"; sync -f "$baseline_dir/$key.json.tmp"; mv "$baseline_dir/$key.json.tmp" "$baseline_dir/$key.json"
     rm -f "$baseline_response" "$baseline_intent" "$transaction/.baseline-server-compare.json" "$transaction/.baseline-intent-compare.json"
   done
-  (cd "$baseline_dir" && for baseline_key in serviceaccount role clusterrole deployment service deny access-ingress egress rolebinding clusterrolebinding; do sha256sum "$baseline_key.json"; done >baseline.sha256.tmp)
+  (cd "$baseline_dir" && for baseline_key in serviceaccount role deployment service deny access-ingress egress rolebinding; do sha256sum "$baseline_key.json"; done >baseline.sha256.tmp)
   chmod 0400 "$baseline_hashes.tmp"; sync -f "$baseline_hashes.tmp"; mv "$baseline_hashes.tmp" "$baseline_hashes"; sync -f "$baseline_dir"; sync -f "$transaction"
   validate_baseline_bundle
   write_phase baselined; phase=baselined
@@ -237,7 +235,7 @@ if [ "$phase" = apply-intent ]; then
   anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
   [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
   sed "s/BLAZN_PHASE5_ANCHOR_UID/$anchor_uid/g" "$sealed" >"$anchored.tmp"
-  if [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -ne 10 ] || grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp"; then
+  if [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -ne 8 ] || grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp"; then
     printf 'rebuilt anchored controller manifest is invalid\n' >&2; exit 1
   fi
   chmod 0400 "$anchored.tmp"; sync -f "$anchored.tmp"; mv "$anchored.tmp" "$anchored"; sync -f "$transaction"
@@ -285,7 +283,7 @@ if [ "$phase" = applied ] || [ "$phase" = scale-intent ] || [ "$phase" = scaled 
   anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
   [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
   sed "s/BLAZN_PHASE5_ANCHOR_UID/$anchor_uid/g" "$sealed" >"$anchored.tmp"
-  if [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -ne 10 ] || grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp"; then
+  if [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -ne 8 ] || grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp"; then
     printf 'rebuilt anchored controller manifest is invalid\n' >&2; exit 1
   fi
   chmod 0400 "$anchored.tmp"; sync -f "$anchored.tmp"; mv "$anchored.tmp" "$anchored"; sync -f "$transaction"

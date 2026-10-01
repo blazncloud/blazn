@@ -60,7 +60,7 @@ for script in "$ROOT"/*.sh; do sh -n "$script"; done
 render "$tmp/ip.yaml"
 manifest_mode=$(stat -c '%a' "$tmp/ip.yaml" 2>/dev/null || stat -f '%Lp' "$tmp/ip.yaml")
 [ "$manifest_mode" = 400 ]
-[ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 10 ]
+[ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 8 ]
 [ "$(grep -Fxc "        image: $IMAGE" "$tmp/ip.yaml")" -eq 2 ]
 grep -F '  replicas: 0' "$tmp/ip.yaml" >/dev/null
 grep -F '  clusterIP: 10.152.183.207' "$tmp/ip.yaml" >/dev/null
@@ -113,12 +113,12 @@ grep -F 'value: "https://10.20.30.42:9443"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -Fxc '        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID' "$tmp/ip.yaml")" -eq 1 ]
 grep -A1 -Fx '        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID' "$tmp/ip.yaml" | grep -Fxq '          value: "cluster-test"'
-[ "$(grep -Fxc '    blazn.dev/phase5-transaction: 99999999-9999-4999-8999-999999999999' "$tmp/ip.yaml")" -eq 10 ]
-[ "$(grep -Fxc '    uid: BLAZN_PHASE5_ANCHOR_UID' "$tmp/ip.yaml")" -eq 10 ]
-[ "$(grep -Fxc '    name: blazn-phase5-anchor-99999999-9999-4999-8999-999999999999' "$tmp/ip.yaml")" -eq 10 ]
-[ "$(grep -Fxc '    controller: false' "$tmp/ip.yaml")" -eq 10 ]
-[ "$(grep -Fxc '    blockOwnerDeletion: false' "$tmp/ip.yaml")" -eq 10 ]
-for object_key in serviceaccount role rolebinding clusterrole clusterrolebinding deployment service deny access-ingress egress; do
+[ "$(grep -Fxc '    blazn.dev/phase5-transaction: 99999999-9999-4999-8999-999999999999' "$tmp/ip.yaml")" -eq 8 ]
+[ "$(grep -Fxc '    uid: BLAZN_PHASE5_ANCHOR_UID' "$tmp/ip.yaml")" -eq 8 ]
+[ "$(grep -Fxc '    name: blazn-phase5-anchor-99999999-9999-4999-8999-999999999999' "$tmp/ip.yaml")" -eq 8 ]
+[ "$(grep -Fxc '    controller: false' "$tmp/ip.yaml")" -eq 8 ]
+[ "$(grep -Fxc '    blockOwnerDeletion: false' "$tmp/ip.yaml")" -eq 8 ]
+for object_key in serviceaccount role rolebinding deployment service deny access-ingress egress; do
   [ "$(grep -Fxc "    blazn.dev/phase5-object: $object_key" "$tmp/ip.yaml")" -eq 1 ]
 done
 grep -F 'value: "10.20.30.53/32"' "$tmp/ip.yaml" >/dev/null
@@ -271,18 +271,15 @@ grep -F 'resources: ["networkpolicies"]' "$ROOT/controller.yaml.in" >/dev/null
 [ "$(grep -Fxc '  verbs: ["create", "get"]' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -Fxc '  verbs: ["delete", "list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -Fxc '  verbs: ["create", "delete", "get", "list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
-[ "$(grep -c '^  resources: ' "$ROOT/controller.yaml.in")" -eq 6 ]
-[ "$(grep -c '^  verbs: ' "$ROOT/controller.yaml.in")" -eq 6 ]
+[ "$(grep -c '^  resources: ' "$ROOT/controller.yaml.in")" -eq 5 ]
+[ "$(grep -c '^  verbs: ' "$ROOT/controller.yaml.in")" -eq 5 ]
 [ "$(grep -c '^kind: Role$' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -c '^kind: RoleBinding$' "$ROOT/controller.yaml.in")" -eq 1 ]
-[ "$(grep -c '^kind: ClusterRole$' "$ROOT/controller.yaml.in")" -eq 1 ]
-[ "$(grep -c '^kind: ClusterRoleBinding$' "$ROOT/controller.yaml.in")" -eq 1 ]
-# The only cluster-scoped authority is an exact Node lookup. Scheduling proof
-# must never permit inventory/list/watch or any Node mutation.
-node_rule=$(awk '/^kind: ClusterRole$/{role=1} role&&/^rules:/{rules=1} rules{print} role&&/^---$/{exit}' "$ROOT/controller.yaml.in")
-printf '%s\n' "$node_rule" | grep -Fxq '  resources: ["nodes"]'
-printf '%s\n' "$node_rule" | grep -Fxq '  verbs: ["get"]'
-if printf '%s\n' "$node_rule" | grep -Eq 'list|watch|create|delete|patch|update|\*'; then printf 'Node observer RBAC is overbroad\n' >&2; exit 1; fi
+# The controller has no cluster-scoped authority. Node identity comes from the
+# Blazn node registry, never from a Kubernetes Node read. The transaction
+# anchor ClusterRole is created by the installer, not rendered here.
+if grep -Eq '^kind: Cluster(Role|RoleBinding)$' "$ROOT/controller.yaml.in"; then printf 'controller manifest must not render cluster-scoped RBAC\n' >&2; exit 1; fi
+if grep -Eq '^  resources: .*"nodes(/[a-z]+)?"' "$ROOT/controller.yaml.in"; then printf 'controller RBAC must not grant any nodes resource\n' >&2; exit 1; fi
 
 # These assertions intentionally match literal Dockerfile build arguments.
 # shellcheck disable=SC2016
