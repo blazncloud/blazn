@@ -1527,3 +1527,63 @@ func writeMutatedJSON(t *testing.T, response http.ResponseWriter, status int, va
 	mutate(document)
 	writeJSON(response, status, document)
 }
+
+func TestDestroyUnboundDeletesThenProvesAbsenceOfSandboxPodAndWorkload(t *testing.T) {
+	fake := newFakeAPI(t)
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := record
+	foreign.WorkspaceID = "workspace-b"
+	assertCode(t, adapter.DestroyUnbound(context.Background(), "workspace-b", request.OwnerID, foreign), ErrIdentityBoundary)
+	if fake.object.Metadata.DeletionTimestamp != "" {
+		t.Fatal("a foreign identity deleted the Sandbox")
+	}
+	if err := adapter.DestroyUnbound(context.Background(), request.WorkspaceID, request.OwnerID, record); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	deleting := fake.object.Metadata.DeletionTimestamp != ""
+	fake.mu.Unlock()
+	if !deleting {
+		t.Fatal("unbound Sandbox was not deleted")
+	}
+	assertCode(t, adapter.ObserveUnboundAbsence(context.Background(), request.WorkspaceID, request.OwnerID, record.Name, record.UID), ErrCleanupIncomplete)
+	fake.mu.Lock()
+	fake.sandboxAbsent = true
+	fake.mu.Unlock()
+	assertCode(t, adapter.ObserveUnboundAbsence(context.Background(), request.WorkspaceID, request.OwnerID, record.Name, record.UID), ErrCleanupIncomplete)
+	fake.mu.Lock()
+	fake.podsAbsent = true
+	fake.mu.Unlock()
+	assertCode(t, adapter.ObserveUnboundAbsence(context.Background(), request.WorkspaceID, request.OwnerID, record.Name, record.UID), ErrCleanupIncomplete)
+	fake.mu.Lock()
+	fake.workloadsAbsent = true
+	fake.mu.Unlock()
+	if err := adapter.ObserveUnboundAbsence(context.Background(), request.WorkspaceID, request.OwnerID, record.Name, record.UID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestObserveUnboundAbsenceFindsAnUnlabeledPodBySandboxUID(t *testing.T) {
+	fake := newFakeAPI(t)
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.sandboxAbsent, fake.workloadsAbsent = true, true
+	for key := range fake.object.Spec.PodTemplate.Metadata.Labels {
+		delete(fake.object.Spec.PodTemplate.Metadata.Labels, key)
+	}
+	fake.mu.Unlock()
+	assertCode(t, adapter.ObserveUnboundAbsence(context.Background(), request.WorkspaceID, request.OwnerID, record.Name, record.UID), ErrCleanupIncomplete)
+	if err := adapter.ObserveUnboundAbsence(context.Background(), request.WorkspaceID, request.OwnerID, record.Name, ""); err != nil {
+		t.Fatalf("an unlabeled Pod of an unknown Sandbox UID blocked absence: %v", err)
+	}
+}

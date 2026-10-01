@@ -382,6 +382,59 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 	return nil
 }
 
+// ObserveUnboundAbsence proves that a Sandbox the controller created but never
+// recorded is gone together with its Pod and Kueue Workload. No admission was
+// frozen for it, so dependents are matched by the Sandbox UID (when one was
+// observed) and by this sandbox's managed identity labels.
+func (a *Adapter) ObserveUnboundAbsence(ctx context.Context, workspaceID, ownerID, name, sandboxUID string) error {
+	if err := validateIdentity(workspaceID, ownerID, name); err != nil {
+		return err
+	}
+	if sandboxUID != "" && !objectIDPattern.MatchString(sandboxUID) {
+		return adapterError(ErrIdentityBoundary, 400, "Sandbox UID is invalid", nil)
+	}
+	var sandbox kubeSandbox
+	err := a.call(ctx, http.MethodGet, a.resourcePath(name), nil, nil, &sandbox, "")
+	if err == nil {
+		return adapterError(ErrCleanupIncomplete, 409, "unbound Sandbox or a same-name replacement remains", nil)
+	}
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrNotFound {
+		return err
+	}
+	var pods observedIdentityList
+	if err := a.call(ctx, http.MethodGet, a.podCollectionPath(), nil, nil, &pods, ""); err != nil {
+		return err
+	}
+	if pods.APIVersion != podAPIVersion || pods.Kind != "PodList" {
+		return adapterError(ErrBackend, 502, "Pod absence observation API drifted", nil)
+	}
+	for _, pod := range pods.Items {
+		if !validObservedListIdentity(pod.APIVersion, pod.Kind, podAPIVersion, podKind, pod.Metadata) {
+			return adapterError(ErrBackend, 502, "Pod absence observation contained an invalid identity", nil)
+		}
+		if sandboxUID != "" && hasControllerUID(pod.Metadata.OwnerReferences, sandboxUID) || hasWorkloadLabels(pod.Metadata.Labels, workspaceID, ownerID, name) {
+			return adapterError(ErrCleanupIncomplete, 409, "unbound Sandbox Pod remains", nil)
+		}
+	}
+	var workloads observedIdentityList
+	if err := a.call(ctx, http.MethodGet, a.workloadCollectionPath(), nil, nil, &workloads, ""); err != nil {
+		return err
+	}
+	if workloads.APIVersion != AdmissionAPIVersion || workloads.Kind != "WorkloadList" {
+		return adapterError(ErrBackend, 502, "Workload absence observation API drifted", nil)
+	}
+	for _, workload := range workloads.Items {
+		if !validObservedListIdentity(workload.APIVersion, workload.Kind, AdmissionAPIVersion, workloadKind, workload.Metadata) {
+			return adapterError(ErrBackend, 502, "Workload absence observation contained an invalid identity", nil)
+		}
+		if hasWorkloadLabels(workload.Metadata.Labels, workspaceID, ownerID, name) {
+			return adapterError(ErrCleanupIncomplete, 409, "unbound Kueue Workload remains", nil)
+		}
+	}
+	return nil
+}
+
 func admissionSelector(workspaceID, ownerID, name string) string {
 	return selector(workspaceID, ownerID) + "," + SandboxIDLabel + "=" + name
 }

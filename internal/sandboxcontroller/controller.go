@@ -156,7 +156,80 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 	if !errors.As(err, &failure) {
 		failure = &Failure{Code: "backend_failure", SafeMessage: "sandbox backend operation failed", Retryable: true, Cause: err}
 	}
+	if destroysUnboundCreate(item, failure) {
+		switch c.destroyUnboundCreate(parent, item) {
+		case unboundLeaseLost:
+			return nil
+		case unboundDestroyed:
+			return c.finishDestroyedCreate(parent, item, failure)
+		}
+	}
 	return c.finishFailure(parent, item, failure)
+}
+
+// finalCreateAttempt mirrors sandbox_controller_retry (migration 013), which
+// records recovery_required instead of retrying once attempt_count reaches 5.
+const finalCreateAttempt = 5
+
+// destroysUnboundCreate reports whether a failed create must remove a backend
+// it created but never recorded: no later attempt will adopt it, so leaving it
+// would orphan the Sandbox and Pod and block a clean delete (M4.8).
+func destroysUnboundCreate(item WorkItem, failure *Failure) bool {
+	// Recorded sources mean the database already holds this create's
+	// admission evidence; that path keeps its existing recovery semantics.
+	if item.OperationType != "create" || item.BackendUID != nil || item.SourceMaterialization != nil || failure.Code == "invalid_work_item" {
+		return false
+	}
+	return failure.Ambiguous || !failure.Retryable || item.Attempt >= finalCreateAttempt
+}
+
+type unboundOutcome int
+
+const (
+	unboundNotDestroyed unboundOutcome = iota
+	unboundDestroyed
+	unboundLeaseLost
+)
+
+// destroyUnboundCreate runs after the operation context has ended, so it
+// renews the lease and keeps it alive with its own heartbeat. Any failure to
+// prove absence leaves the original failure to be recorded unchanged.
+func (c *Controller) destroyUnboundCreate(parent context.Context, item WorkItem) unboundOutcome {
+	destroyer, ok := c.backend.(UnboundCreateBackend)
+	if !ok {
+		return unboundNotDestroyed
+	}
+	window, renewed, err := c.refreshClaimLease(parent, item)
+	if err != nil || !renewed || !c.leaseCoversNextRenew(window.Deadline) {
+		log.Print("sandbox controller could not renew its lease to destroy an unbound create backend")
+		return unboundNotDestroyed
+	}
+	item.LeaseExpiresAt, item.LeaseRemaining, item.LeaseDeadline = window.ExpiresAt, window.Remaining, window.Deadline
+	ctx, cancel := context.WithTimeout(parent, c.config.OperationTimeout)
+	defer cancel()
+	heartbeatDone := make(chan heartbeatResult, 1)
+	go c.heartbeat(ctx, cancel, item, heartbeatDone)
+	err = destroyer.DestroyUnboundCreate(ctx, item)
+	cancel()
+	switch heartbeat := <-heartbeatDone; heartbeat.kind {
+	case heartbeatLeaseLost, heartbeatStoreError:
+		return unboundLeaseLost
+	}
+	if err != nil {
+		log.Printf("sandbox controller could not prove an unbound create backend absent: %v", err)
+		return unboundNotDestroyed
+	}
+	return unboundDestroyed
+}
+
+// finishDestroyedCreate records the create as failed with its backend proven
+// destroyed, which a later delete accepts as cleanup proof (migration 042).
+func (c *Controller) finishDestroyedCreate(ctx context.Context, item WorkItem, failure *Failure) error {
+	safe := SafeError{Code: safeCode(failure.Code), Message: safeMessage(failure.SafeMessage), RequestID: newRequestID()}
+	completion := Completion{Status: "failed", CleanupComplete: true, GrantsRevoked: true, BackendDestroyed: true,
+		ArtifactIDs: []string{}, WarningCodes: []string{}, Error: &safe}
+	_, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, completion)
+	return err
 }
 
 // refreshClaimLease repairs a claim whose safe local deadline no longer spans

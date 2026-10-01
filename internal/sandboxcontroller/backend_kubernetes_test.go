@@ -37,6 +37,8 @@ type fakeSandboxAdapter struct {
 	getErr        error
 	finalizeErr   error
 	absenceErrs   []error
+	unboundAbsent []error
+	destroyed     []string
 	afterFinalize func()
 	block         bool
 }
@@ -187,6 +189,29 @@ func (f *fakeSandboxAdapter) CleanupOwnedDependents(_ context.Context, observati
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "cleanup-dependents")
 	return sandboxcontrol.ValidateAdmissionObservation(observation)
+}
+
+func (f *fakeSandboxAdapter) DestroyUnbound(_ context.Context, workspaceID, ownerID string, record sandboxcontrol.SandboxRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "destroy-unbound")
+	if workspaceID != record.WorkspaceID || ownerID != record.OwnerID {
+		return &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrIdentityBoundary, Status: 404, SafeDetail: "destroy identity changed"}
+	}
+	f.destroyed = append(f.destroyed, record.UID)
+	return nil
+}
+
+func (f *fakeSandboxAdapter) ObserveUnboundAbsence(_ context.Context, workspaceID, ownerID, name, sandboxUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "unbound-absence:"+sandboxUID)
+	if len(f.unboundAbsent) == 0 {
+		return nil
+	}
+	err := f.unboundAbsent[0]
+	f.unboundAbsent = f.unboundAbsent[1:]
+	return err
 }
 
 func (f *fakeSandboxAdapter) setGetError(err error) {
@@ -853,5 +878,54 @@ func assertAmbiguousRetryable(t *testing.T, err error) {
 	failure, ok := BackendFailure(err)
 	if !ok || !failure.Ambiguous || !failure.Retryable {
 		t.Fatalf("wanted ambiguous retryable failure, got %#v (%v)", failure, err)
+	}
+}
+
+func TestKubernetesBackendDestroysAMatchingUnboundCreateAndProvesAbsence(t *testing.T) {
+	item, record, _ := backendFixture(t)
+	adapter := &fakeSandboxAdapter{record: record, unboundAbsent: []error{
+		&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: "pod remains"}}}
+	backend := newTestKubernetesBackend(t, adapter, true)
+	if err := backend.DestroyUnboundCreate(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"get", "destroy-unbound", "unbound-absence:" + record.UID, "unbound-absence:" + record.UID}
+	if calls := adapter.snapshotCalls(); !reflect.DeepEqual(calls, want) || !reflect.DeepEqual(adapter.destroyed, []string{record.UID}) {
+		t.Fatalf("calls=%v destroyed=%v", calls, adapter.destroyed)
+	}
+}
+
+func TestKubernetesBackendLeavesAMismatchedUnboundSandboxAlone(t *testing.T) {
+	item, record, _ := backendFixture(t)
+	// Same name and identity labels, but not the Sandbox this work item renders.
+	record.TrustLevel = "untrusted"
+	adapter := &fakeSandboxAdapter{record: record}
+	if err := newTestKubernetesBackend(t, adapter, true).DestroyUnboundCreate(context.Background(), item); err == nil {
+		t.Fatal("a Sandbox that does not match the work item was destroyed")
+	}
+	if len(adapter.destroyed) != 0 {
+		t.Fatalf("destroyed=%v", adapter.destroyed)
+	}
+}
+
+func TestKubernetesBackendProvesAbsenceWhenTheUnboundSandboxWasNeverCreated(t *testing.T) {
+	item, record, _ := backendFixture(t)
+	adapter := &fakeSandboxAdapter{record: record, getErr: &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrNotFound, Status: 404, SafeDetail: "absent"}}
+	backend := newTestKubernetesBackend(t, adapter, true)
+	if err := backend.DestroyUnboundCreate(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if calls := adapter.snapshotCalls(); !reflect.DeepEqual(calls, []string{"get", "unbound-absence:"}) {
+		t.Fatalf("calls=%v", calls)
+	}
+}
+
+func TestKubernetesBackendRefusesToDestroyABoundBackend(t *testing.T) {
+	item, record, _ := backendFixture(t)
+	uid := record.UID
+	item.BackendUID = &uid
+	adapter := &fakeSandboxAdapter{record: record}
+	if err := newTestKubernetesBackend(t, adapter, true).DestroyUnboundCreate(context.Background(), item); err == nil || len(adapter.snapshotCalls()) != 0 {
+		t.Fatalf("bound backend err=%v calls=%v", err, adapter.snapshotCalls())
 	}
 }
