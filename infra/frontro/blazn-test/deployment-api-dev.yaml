@@ -80,7 +80,7 @@ spec:
           value: 10.152.183.239:1025
         - name: EMAIL_CAPTURE_DOMAIN
           value: blazn.invalid
-        image: registry.blazn-test.internal/blazn/control-api@sha256:ca927c556ec80a5c6114a4effef279fa06ddd654f53696d4cafd7ed63a5f28f6
+        image: registry.blazn-test.internal/blazn/control-api@sha256:e190a2740b69af3d5bc6931469215ddb01c2a6341080409c560ec49b377c4859
         imagePullPolicy: Always
         livenessProbe:
           failureThreshold: 6
@@ -138,6 +138,51 @@ spec:
         - mountPath: /node
           name: node
           readOnly: true
+      - command:
+        - node
+        - dist/agent-run-controller-main.js
+        env:
+        - name: NODE_ENV
+          value: production
+        - name: BLAZN_AGENT_RUN_DATABASE_URL_FILE
+          value: /agent-run/database-url
+        - name: BLAZN_MODEL_ROUTES_FILE
+          value: /agent-run/model-routes.json
+        - name: BLAZN_SANDBOX_ACCESS_URL
+          value: http://10.152.183.207:8080/
+        - name: BLAZN_AGENT_HARNESS_DIR
+          value: /app/agent
+        - name: BLAZN_AGENT_RUN_WORKER_ID
+          value: agent-run-controller-api-dev
+        image: registry.blazn-test.internal/blazn/control-api@sha256:e190a2740b69af3d5bc6931469215ddb01c2a6341080409c560ec49b377c4859
+        imagePullPolicy: Always
+        name: agent-run-controller
+        resources:
+          limits:
+            cpu: 100m
+            ephemeral-storage: 64Mi
+            memory: 256Mi
+          requests:
+            cpu: 25m
+            ephemeral-storage: 32Mi
+            memory: 96Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent-run
+          name: agent-run
+          readOnly: true
+        - mountPath: /public
+          name: public
+          readOnly: true
+        - mountPath: /tmp
+          name: agent-run-tmp
       - args:
         - agent
         - -config=/agent/sidecar.hcl
@@ -274,6 +319,14 @@ spec:
       serviceAccountName: blazn-api
       terminationGracePeriodSeconds: 30
       volumes:
+      - name: agent-run
+        secret:
+          defaultMode: 288
+          secretName: api-dev-agent-run
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: agent-run-tmp
       - name: email
         secret:
           defaultMode: 288

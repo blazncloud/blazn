@@ -24,6 +24,7 @@ type API interface {
 	ListRunEvents(context.Context, string, string, string, string, string) (client.RunEventList, error)
 	ListRunProgress(context.Context, string, string, string, string) (client.RunProgressList, error)
 	ListRunArtifacts(context.Context, string, string, string, string, string) (client.ArtifactList, error)
+	DownloadArtifact(context.Context, string, string, string, string) ([]byte, error)
 }
 
 type Service struct {
@@ -169,6 +170,17 @@ func (s *Service) Progress(ctx context.Context, runID string) (client.RunProgres
 	}
 	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunProgressList, error) {
 		return s.api.ListRunProgress(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID)
+	})
+}
+
+// DownloadArtifact returns the stored bytes of one Artifact in the selected Project.
+func (s *Service) DownloadArtifact(ctx context.Context, artifactID string) ([]byte, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) ([]byte, error) {
+		return s.api.DownloadArtifact(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, artifactID)
 	})
 }
 

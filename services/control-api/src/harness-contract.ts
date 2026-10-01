@@ -11,6 +11,7 @@ const approvedExecutables:Record<string,{identity:string,path:string}>={
   "codex-cli":{identity:"blazn-codex-adapter",path:"/opt/blazn/codex"},
   "claude-code":{identity:"blazn-claude-adapter",path:"/opt/blazn/claude"},
   "generic-cli":{identity:"blazn-generic-adapter",path:"/opt/blazn/generic-fixture"},
+  "blazn-agent":{identity:"blazn-agent-adapter",path:"/opt/blazn/agent"},
 };
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
 const text = (value: unknown): string => typeof value === "string" ? value : "";

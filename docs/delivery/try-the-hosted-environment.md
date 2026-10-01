@@ -125,9 +125,48 @@ workspace (M4.7, M4.3). Known gaps, tracked in the delivery plan:
   clean up (M4.8).
 - The example templates in this repository do not point at GHCR yet (M4.9).
 
+## 6. Run an agent and talk to it
+
+An Agent runs in its own sandbox on one of your nodes. You send it messages
+and it answers in the same Run; when the conversation goes quiet the Run
+finishes and returns a patch and a summary. Nothing is pushed anywhere.
+
+Create the Agent once (this registers the harness, a profile and the Agent in
+the selected project):
+
+```sh
+blazn agent quickstart my-agent --template NAME@VERSION \
+  --repository REPOSITORY_URL --commit COMMIT_SHA --route MODEL_ROUTE_ID \
+  --instructions "You are a careful coding agent." --request-id agent-$(date +%s)
+```
+
+It prints an Agent Version ID and a Harness Profile ID. Then:
+
+```sh
+blazn run create --agent-version AGENT_VERSION_ID --harness-profile HARNESS_PROFILE_ID --request-id run-$(date +%s)
+blazn run send RUN_ID --kind prompt --content "Add a CONTRIBUTING.md" --request-id msg-$(date +%s)
+blazn run messages RUN_ID          # the Agent's answer has kind "reply"
+blazn run watch RUN_ID             # tool calls and model calls as they happen
+blazn run send RUN_ID --kind followup --content "Make it shorter" --request-id msg-$(date +%s)
+
+blazn run artifacts RUN_ID         # after the Run has finished: patch and summary
+blazn run download ARTIFACT_ID --output change.patch
+blazn run cancel RUN_ID --expected-version N --request-id cancel-$(date +%s)
+```
+
+The first reply takes a few minutes while the sandbox starts. A Run finishes
+after five idle minutes, and its sandbox is stopped.
+
+The model is chosen by the model route. The development environment has one
+route today, `0a000000-0000-4000-8000-000000000001`: a stand-in model that runs
+one command in the sandbox and reports its output. It proves the whole path
+without a model server; real model routes are added by the operator (see
+[the controller notes](../agent-run-controller.md)).
+
 ## Automated checks
 
 ```sh
 python3 infra/qualification/qualify-flows.py        # steps 2 and 3, 42 checks
 python3 infra/qualification/sandbox-lifecycle.py … # step 5, 13 checks per iteration; see infra/qualification/README.md
+python3 infra/qualification/agent-run.py …         # step 6; see infra/qualification/README.md
 ```

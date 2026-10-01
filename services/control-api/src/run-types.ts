@@ -36,7 +36,7 @@ export interface CompleteSyntheticRunInput { expectedVersion:number; planDigest:
 export interface SyntheticArtifactUploadMetadata { name:string;kind:string;mediaType:ArtifactMediaType;sizeBytes:number;digest:string }
 export interface RunMessage {
   id:string;workspaceId:string;projectId:string;runId:string;ordinal:number;role:RunMessageRole;
-  kind:RunMessageKind;status:RunMessageStatus;parentMessageId?:string;content:string;contentDigest:string;
+  kind:RunMessageKind|"reply";status:RunMessageStatus;parentMessageId?:string;content:string;contentDigest:string;
   createdBy:string;createdAt:string;
 }
 export interface SendRunMessageInput { kind:RunMessageKind;content:string;parentMessageId?:string }

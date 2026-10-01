@@ -191,7 +191,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
-  assert.deepEqual(migrations.slice(-15), [
+  assert.deepEqual(migrations.slice(-16), [
     "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
     "027_controller_role_public_grants.sql",
@@ -207,6 +207,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "037_agent_harness.sql",
     "038_agent_run_controller.sql",
     "039_email_login_codes.sql",
+    "040_agent_run_execution.sql",
   ]);
 });
 

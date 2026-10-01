@@ -215,12 +215,14 @@ def main():
     record("owner signs back in and still sees the workspace", ws_id in json.dumps(again), "")
 
 
-try:
-    main()
-except SystemExit:
-    pass
-except Exception as error:
-    results.append({"step": "harness", "ok": False, "detail": str(error)[:500]})
-finally:
-    sh("ben5", f"sudo -n docker ps -aq --filter name=blazn-qual-{RUN} | xargs -r sudo -n docker rm -f >/dev/null; sudo -n rm -rf {ROOT}", check=False)
-    print(json.dumps({"run": RUN, "passed": sum(r["ok"] for r in results), "failed": sum(not r["ok"] for r in results), "results": results}, indent=1))
+# Guarded so other qualification scripts can import the sign-in helpers.
+if __name__ == "__main__":
+    try:
+        main()
+    except SystemExit:
+        pass
+    except Exception as error:
+        results.append({"step": "harness", "ok": False, "detail": str(error)[:500]})
+    finally:
+        sh("ben5", f"sudo -n docker ps -aq --filter name=blazn-qual-{RUN} | xargs -r sudo -n docker rm -f >/dev/null; sudo -n rm -rf {ROOT}", check=False)
+        print(json.dumps({"run": RUN, "passed": sum(r["ok"] for r in results), "failed": sum(not r["ok"] for r in results), "results": results}, indent=1))

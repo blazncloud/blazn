@@ -19,7 +19,7 @@ import (
 //go:embed run.gen.go.tmpl
 var runTemplate []byte
 
-const supportedRunContractSHA256 = "aa95914d9e6e2c005eb1f770094d8525a87e1b4e969949d0f5efbe9a0fe72d2f"
+const supportedRunContractSHA256 = "6726078461cdf6ad0b23f71c8a34adb7ccda1f311059087fced2c2f5788f1b5a"
 
 var operations = map[string]string{
 	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                                      "createRun",
@@ -38,6 +38,7 @@ var operations = map[string]string{
 	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/progress":                      "listRunProgress",
 	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts":                                  "listArtifacts",
 	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts/{artifactId}":                     "getArtifact",
+	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts/{artifactId}/content":             "downloadArtifact",
 }
 
 var schemaFields = map[string][]string{
@@ -45,8 +46,9 @@ var schemaFields = map[string][]string{
 	"RunPlacement": {"modelRouteId", "nodeId", "sandboxId"},
 	"RunReceipt":   {"artifactIds", "outcome", "planDigest", "proofClass", "schemaVersion", "summary"},
 	"RunEnvelope":  {"run"}, "RunList": {"items", "nextCursor"},
-	"CreateRunRequest": {"inputArtifactIds", "kind", "outputNames", "planDigest", "proofClass"}, "CancelRunRequest": {"expectedVersion"},
-	"RunMessage": {"content", "contentDigest", "createdAt", "createdBy", "id", "kind", "ordinal", "parentMessageId", "projectId", "role", "runId", "status", "workspaceId"}, "SendRunMessageRequest": {"content", "kind", "parentMessageId"},
+	"CreateRunRequest": {"agent", "inputArtifactIds", "kind", "outputNames", "planDigest", "proofClass"}, "CancelRunRequest": {"expectedVersion"},
+	"AgentRunRequest": {"agentVersionId", "architecture", "expiresInSeconds", "harnessProfileId"},
+	"RunMessage":      {"content", "contentDigest", "createdAt", "createdBy", "id", "kind", "ordinal", "parentMessageId", "projectId", "role", "runId", "status", "workspaceId"}, "SendRunMessageRequest": {"content", "kind", "parentMessageId"},
 	"RunMessageEnvelope": {"message"}, "RunMessageList": {"items", "nextCursor"},
 	"ClaimRunMessageRequest": {"leaseSeconds"}, "DeliverRunMessageRequest": {"claimId"}, "RunMessageClaim": {"claimId", "leaseExpiresAt", "message"}, "RunMessageClaimEnvelope": {"claim"},
 	"SyntheticRunProgressRequest": {"message", "percent", "phase", "sequence"}, "ProgressAck": {"runId", "runVersion", "sequence", "status"},
@@ -64,7 +66,8 @@ var schemaRequired = map[string][]string{
 	"RunReceipt":   {"artifactIds", "outcome", "planDigest", "proofClass", "schemaVersion", "summary"},
 	"RunEnvelope":  {"run"}, "RunList": {"items", "nextCursor"},
 	"CreateRunRequest": {"inputArtifactIds", "kind", "outputNames", "planDigest", "proofClass"}, "CancelRunRequest": {"expectedVersion"},
-	"RunMessage": {"content", "contentDigest", "createdAt", "createdBy", "id", "kind", "ordinal", "projectId", "role", "runId", "status", "workspaceId"}, "SendRunMessageRequest": {"content", "kind"},
+	"AgentRunRequest": {"agentVersionId", "harnessProfileId"},
+	"RunMessage":      {"content", "contentDigest", "createdAt", "createdBy", "id", "kind", "ordinal", "projectId", "role", "runId", "status", "workspaceId"}, "SendRunMessageRequest": {"content", "kind"},
 	"RunMessageEnvelope": {"message"}, "RunMessageList": {"items", "nextCursor"},
 	"ClaimRunMessageRequest": {"leaseSeconds"}, "DeliverRunMessageRequest": {"claimId"}, "RunMessageClaim": {"claimId", "leaseExpiresAt", "message"}, "RunMessageClaimEnvelope": {"claim"},
 	"SyntheticRunProgressRequest": {"percent", "phase", "sequence"}, "ProgressAck": {"runId", "runVersion", "sequence", "status"},
@@ -122,7 +125,7 @@ func validate(document map[string]any, template string) error {
 		return fmt.Errorf("Run server origin changed")
 	}
 	paths, ok := valueAt(document, "paths").(map[string]any)
-	if !ok || len(paths) != 13 {
+	if !ok || len(paths) != 14 {
 		return fmt.Errorf("Run paths changed")
 	}
 	seen := map[string]string{}

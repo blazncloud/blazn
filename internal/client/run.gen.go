@@ -1,11 +1,13 @@
 // Code generated from packages/contracts/runs.openapi.json; DO NOT EDIT.
-// Contract SHA256: aa95914d9e6e2c005eb1f770094d8525a87e1b4e969949d0f5efbe9a0fe72d2f
+// Contract SHA256: 6726078461cdf6ad0b23f71c8a34adb7ccda1f311059087fced2c2f5788f1b5a
 
 package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,6 +70,7 @@ const (
 	RunMessageKindPrompt   RunMessageKind = "prompt"
 	RunMessageKindFollowup RunMessageKind = "followup"
 	RunMessageKindSteer    RunMessageKind = "steer"
+	RunMessageKindReply    RunMessageKind = "reply"
 )
 
 type RunPlacement struct {
@@ -113,12 +116,21 @@ type RunList struct {
 	Items      []Run   `json:"items"`
 	NextCursor *string `json:"nextCursor"`
 }
+
+// AgentRunRequest runs a published AgentVersion in a Sandbox created for the Run.
+type AgentRunRequest struct {
+	AgentVersionID   string `json:"agentVersionId"`
+	HarnessProfileID string `json:"harnessProfileId"`
+	Architecture     string `json:"architecture,omitempty"`
+	ExpiresInSeconds int    `json:"expiresInSeconds,omitempty"`
+}
 type CreateRunRequest struct {
-	Kind             string     `json:"kind"`
-	ProofClass       ProofClass `json:"proofClass"`
-	PlanDigest       string     `json:"planDigest"`
-	InputArtifactIDs []string   `json:"inputArtifactIds"`
-	OutputNames      []string   `json:"outputNames"`
+	Kind             string           `json:"kind"`
+	ProofClass       ProofClass       `json:"proofClass"`
+	PlanDigest       string           `json:"planDigest"`
+	InputArtifactIDs []string         `json:"inputArtifactIds"`
+	OutputNames      []string         `json:"outputNames"`
+	Agent            *AgentRunRequest `json:"agent,omitempty"`
 }
 type CancelRunRequest struct {
 	ExpectedVersion int `json:"expectedVersion"`
@@ -487,6 +499,48 @@ func (c *Client) GetArtifact(ctx context.Context, accessToken, workspaceID, proj
 	return output, err
 }
 
+// DownloadArtifact returns the stored bytes of a ready Artifact, verified against the digest the API reports.
+func (c *Client) DownloadArtifact(ctx context.Context, accessToken, workspaceID, projectID, artifactID string) ([]byte, error) {
+	path, err := artifactCollectionPath(workspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !runUUID.MatchString(artifactID) {
+		return nil, fmt.Errorf("Artifact ID must be a UUID")
+	}
+	if accessToken == "" {
+		return nil, fmt.Errorf("access token is required")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.workspaceEndpoint(path+"/"+url.PathEscape(artifactID)+"/content", nil), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create Artifact download request: %w", err)
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call Artifact download: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeWorkspaceAPIError(response)
+	}
+	content, err := io.ReadAll(io.LimitReader(response.Body, maxArtifactDownloadBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read Artifact download: %w", err)
+	}
+	if len(content) > maxArtifactDownloadBytes {
+		return nil, fmt.Errorf("Artifact download exceeds the client limit")
+	}
+	digest := sha256.Sum256(content)
+	if response.Header.Get("X-Content-SHA256") != "sha256:"+hex.EncodeToString(digest[:]) {
+		return nil, fmt.Errorf("Artifact download failed its integrity check")
+	}
+	return content, nil
+}
+
+const maxArtifactDownloadBytes = 16 << 20
+
 func validateCreateRun(request CreateRunRequest) error {
 	if !runKind.MatchString(request.Kind) || !validProofClass(request.ProofClass) || !runDigest.MatchString(request.PlanDigest) || len(request.InputArtifactIDs) > 1000 || len(request.OutputNames) > 1000 {
 		return fmt.Errorf("Run create request is invalid")
@@ -510,6 +564,11 @@ func validateCreateRun(request CreateRunRequest) error {
 			return fmt.Errorf("Run output names must be unique")
 		}
 		names[name] = struct{}{}
+	}
+	if agent := request.Agent; agent != nil {
+		if request.ProofClass != ProofClassSandbox || !runUUID.MatchString(agent.AgentVersionID) || !runUUID.MatchString(agent.HarnessProfileID) || (agent.Architecture != "" && agent.Architecture != "amd64" && agent.Architecture != "arm64") || (agent.ExpiresInSeconds != 0 && (agent.ExpiresInSeconds < 300 || agent.ExpiresInSeconds > 7200)) {
+			return fmt.Errorf("Run agent request is invalid")
+		}
 	}
 	return nil
 }
