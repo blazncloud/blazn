@@ -88,7 +88,9 @@ finally:
 
 def form(path, fields):
     args = " ".join(f"--data-urlencode {shlex.quote(k + '=' + v)}" for k, v in fields.items())
-    return sh("ben5", f"curl -s -m 20 -w '\\n%{{http_code}}' -X POST {API}{path} {args}", check=False)
+    # Post as a browser does: the activation page is served with
+    # Referrer-Policy: no-referrer, so its forms arrive with "Origin: null".
+    return sh("ben5", f"curl -s -m 20 -w '\\n%{{http_code}}' -X POST -H 'Origin: null' {API}{path} {args}", check=False)
 
 
 def login(user, email, mode):
