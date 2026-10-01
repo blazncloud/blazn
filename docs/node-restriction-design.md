@@ -1,6 +1,7 @@
 # Design: confine a node's credential to its own Node (NodeRestriction)
 
-Status: proposed, not implemented. Plan item M0.9.
+Status: approved 2026-10-01. Rollout step 1 (the watch-only policies) is live;
+the rest is not implemented. Plan item M0.9.
 
 ## Problem
 

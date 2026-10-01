@@ -1,0 +1,10 @@
+apiVersion: v1
+data:
+  frontroHosts: ben1,ben2,ben3,ben4,ben5,mac-mini-1-agent,mac-mini-2-agent,mac-mini-3-agent,mac-mini-4-agent,mac-mini-5-agent,mac-mini-6-agent
+  retiredNodeNames: ''
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/part-of: blazn-hosting
+  name: blazn-node-registration
+  namespace: blazn-test

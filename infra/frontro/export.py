@@ -32,6 +32,10 @@ DROP_ANNOTATION_PREFIXES = (
     "volume.beta.kubernetes.io/", "volume.kubernetes.io/",
 )
 EDGE_CONFIGMAP = ("moments-direct", "moments-direct-gateway", "dynamic.yml")
+# Cluster-scoped objects are exported only when they carry this label.
+CLUSTER_KINDS = "validatingadmissionpolicy,validatingadmissionpolicybinding"
+CLUSTER_SELECTOR = "app.kubernetes.io/part-of=blazn-hosting"
+CLUSTER_SCOPED = {"Namespace", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"}
 
 
 class Dumper(yaml.SafeDumper):
@@ -66,7 +70,7 @@ def clean_metadata(metadata, namespaced=True):
 
 def clean(item):
     kind = item["kind"]
-    out = {"apiVersion": item["apiVersion"], "kind": kind, "metadata": clean_metadata(item["metadata"], kind != "Namespace")}
+    out = {"apiVersion": item["apiVersion"], "kind": kind, "metadata": clean_metadata(item["metadata"], kind not in CLUSTER_SCOPED)}
     for key in ("data", "binaryData", "rules", "roleRef", "subjects", "automountServiceAccountToken"):
         if key in item:
             out[key] = item[key]
@@ -129,6 +133,16 @@ def render(target):
             {"name": s["metadata"]["name"], "type": s["type"], "keys": sorted((s.get("data") or {}).keys())}
             for s in sorted(secrets, key=lambda s: s["metadata"]["name"])]
     (target / "secrets.json").write_text(json.dumps(inventory, indent=2) + "\n")
+    directory = target / "cluster"
+    directory.mkdir(exist_ok=True)
+    names = []
+    items = json.loads(kubectl("get", CLUSTER_KINDS, "-l", CLUSTER_SELECTOR, "-o", "json"))["items"]
+    for item in sorted(items, key=lambda i: (i["kind"], i["metadata"]["name"])):
+        name = f'{item["kind"].lower()}-{item["metadata"]["name"]}.yaml'
+        (directory / name).write_text(dump(clean(item)))
+        names.append(name)
+    (directory / "kustomization.yaml").write_text(dump({
+        "apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization", "resources": names}))
     namespace, name, key = EDGE_CONFIGMAP
     dynamic = json.loads(kubectl("-n", namespace, "get", "configmap", name, "-o", "json"))["data"][key]
     (target / "edge").mkdir(exist_ok=True)
@@ -139,7 +153,7 @@ def render(target):
 
 def generated(root):
     paths = [root / "namespaces.yaml", root / "secrets.json", root / "edge" / "blazn-routes.yaml"]
-    for namespace in NAMESPACES:
+    for namespace in NAMESPACES + ["cluster"]:
         paths += sorted((root / namespace).glob("*.yaml"))
     return {str(p.relative_to(root)): p.read_text() for p in paths if p.exists()}
 
@@ -157,7 +171,7 @@ def main():
     if sys.argv[1:]:
         print(__doc__)
         return 64
-    for namespace in NAMESPACES:
+    for namespace in NAMESPACES + ["cluster"]:
         for stale in (ROOT / namespace).glob("*.yaml"):
             stale.unlink()
     render(ROOT)

@@ -8,6 +8,7 @@ they are deployed. Operating procedures are in
 |---|---|
 | `namespaces.yaml` | The `blazn-test` and `blazn-identity-dev` namespaces. |
 | `blazn-test/` | Control API (`api-dev`), object store, registry, their ConfigMaps, ServiceAccounts, PVCs, NetworkPolicies, and the cert-manager Issuers and Certificates behind their TLS Secrets. `kubectl apply -k`. |
+| `cluster/` | Cluster-scoped objects labeled `app.kubernetes.io/part-of=blazn-hosting`: the watch-only node admission policies. `kubectl apply -k`. |
 | `blazn-identity-dev/` | The Mailpit capture inbox used by qualification. The ZITADEL stack that also lived here was retired on 2026-10-01. |
 | `edge/blazn-routes.yaml` | Reference copy of the Blazn routes in the shared Traefik gateway. Not applied from here. |
 | `secrets.json` | Names, types and key names of the Secrets the manifests expect. No values. |
@@ -25,6 +26,7 @@ them to the cluster they came from changes nothing:
 kubectl diff -f infra/frontro/namespaces.yaml
 kubectl diff -k infra/frontro/blazn-test
 kubectl diff -k infra/frontro/blazn-identity-dev
+kubectl diff -k infra/frontro/cluster
 ```
 
 A rebuild on a new cluster additionally needs the OpenBao roles and secrets and

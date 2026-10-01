@@ -186,6 +186,36 @@ and only then unhold and refresh the snap on `ben1`.
    `api-dev-node` from `main` and restart `api-dev`, so issued plans pin the
    published binaries.
 
+## Node admission policies (watch-only)
+
+Step 1 of the [NodeRestriction rollout](../node-restriction-design.md), applied
+on 2026-10-01. Both policies have `validationActions: [Warn, Audit]` and
+`failurePolicy: Ignore`: they cannot reject or delay a request.
+
+| Policy | Flags, for a node credential |
+|---|---|
+| `blazn-node-update-shadow` | changing another Node, changing taints, changing a `node-restriction.kubernetes.io/` label |
+| `blazn-node-registration-guard` | registering a Node that is not one of Frontro's hosts without the `blazn.dev/bootstrap` and `blazn.dev/sandbox-node` taints, or under a retired name |
+
+The API servers have no audit log, so the evidence is a Prometheus counter.
+MicroK8s serves every component's metrics from one process, so filter to the
+API server job or each event is counted four times:
+
+```promql
+sum by (policy) (increase(apiserver_validating_admission_policy_check_total{job="apiserver", policy=~"blazn-node-.*", enforcement_action="warn"}[7d]))
+```
+
+The counters started at 3 (update) and 2 (registration) from the verification
+probes on 2026-10-01. Anything beyond that is a real node credential doing
+something NodeRestriction will forbid: find out what before enabling it.
+Blazn nodes running a CLI older than the server-side taint change are expected
+to appear under the update policy at activation and uninstall.
+
+**Adding a Frontro host:** add its node name to `frontroHosts` in ConfigMap
+`blazn-test/blazn-node-registration` before it joins. While the guard is
+watch-only a missing name only raises the counter; once it is switched to
+`Deny` the host would be refused.
+
 ## Retired on 2026-10-01
 
 - The earlier test deployment `api` (`https://blazn-test.frontro.com`) and the
