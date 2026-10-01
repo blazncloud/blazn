@@ -236,7 +236,7 @@ func TestCreateBindsExactBackendAndCompletes(t *testing.T) {
 
 func TestCreateRecordsFencedAgentNodeObservationBeforeCompletion(t *testing.T) {
 	item, state := createFixture(t)
-	placement := AgentNodeObservation{AdmissionObservationDigest: state.AdmissionObservation.Digest, PodUID: state.AdmissionObservation.Pod.UID, PodResourceVersion: state.AdmissionObservation.Pod.ResourceVersion, KubernetesClusterID: "cluster-a", KubernetesNodeName: "worker-a", KubernetesNodeUID: "node-uid-a"}
+	placement := AgentNodeObservation{AdmissionObservationDigest: state.AdmissionObservation.Digest, PodUID: state.AdmissionObservation.Pod.UID, PodResourceVersion: state.AdmissionObservation.Pod.ResourceVersion, KubernetesClusterID: "cluster-a", KubernetesNodeName: "worker-a"}
 	store := &observingStore{fakeStore: &fakeStore{}, accepted: true}
 	backend := &observingBackend{fakeBackend: &fakeBackend{created: state}, placement: placement}
 	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {

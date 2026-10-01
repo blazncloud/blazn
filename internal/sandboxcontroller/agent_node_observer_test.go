@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestKubernetesAgentNodeObserverFreezesScheduledPodAndNodeUID(t *testing.T) {
+func TestKubernetesAgentNodeObserverFreezesScheduledPodWithoutReadingTheNode(t *testing.T) {
 	admission := storeObservationFixture()
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -19,19 +19,14 @@ func TestKubernetesAgentNodeObserverFreezesScheduledPodAndNodeUID(t *testing.T) 
 				t.Fatalf("pod path=%s", r.URL.Path)
 			}
 			_, _ = w.Write([]byte(`{"metadata":{"name":"` + admission.Pod.Name + `","uid":"` + admission.Pod.UID + `","resourceVersion":"` + admission.Pod.ResourceVersion + `"},"spec":{"nodeName":"worker-a"}}`))
-		case 2:
-			if r.URL.Path != "/api/v1/nodes/worker-a" {
-				t.Fatalf("node path=%s", r.URL.Path)
-			}
-			_, _ = w.Write([]byte(`{"metadata":{"name":"worker-a","uid":"node-uid-a","resourceVersion":"19"}}`))
 		default:
-			t.Fatal("unexpected request")
+			t.Fatalf("unexpected request %s", r.URL.Path)
 		}
 	}))
 	defer server.Close()
 	observer := &kubernetesAgentNodeObserver{baseURL: server.URL, clusterID: "cluster-a", client: server.Client()}
 	got, err := observer.ObserveAgentNode(context.Background(), admission)
-	if err != nil || got.AdmissionObservationDigest != admission.Digest || got.PodUID != admission.Pod.UID || got.PodResourceVersion != admission.Pod.ResourceVersion || got.KubernetesClusterID != "cluster-a" || got.KubernetesNodeName != "worker-a" || got.KubernetesNodeUID != "node-uid-a" {
+	if err != nil || got.AdmissionObservationDigest != admission.Digest || got.PodUID != admission.Pod.UID || got.PodResourceVersion != admission.Pod.ResourceVersion || got.KubernetesClusterID != "cluster-a" || got.KubernetesNodeName != "worker-a" || requests != 1 {
 		t.Fatalf("got=%#v err=%v", got, err)
 	}
 }
