@@ -29,6 +29,7 @@ func TestBackendHoldSetsChangesAndClearsOnlyThePlacementHoldTaint(t *testing.T) 
 		{name: "release when not held", taints: sandboxTaint, uid: retireUID},
 		{name: "not a Blazn node", labels: `"kubernetes.io/hostname":"worker-1"`, uid: retireUID, reason: "paused", code: "hold_rejected"},
 		{name: "control plane", labels: `"node-role.kubernetes.io/control-plane":""`, taints: sandboxTaint, uid: retireUID, reason: "paused", code: "hold_rejected"},
+		{name: "MicroK8s control plane", labels: `"blazn.dev/node":"true","node.kubernetes.io/microk8s-controlplane":"microk8s-controlplane"`, taints: sandboxTaint, uid: retireUID, reason: "paused", code: "hold_rejected"},
 		{name: "different UID", taints: sandboxTaint, uid: "7f3c2a10-0000-4000-8000-000000000002", reason: "paused", code: "binding_conflict"},
 	} {
 		runner := &scriptedRunner{outputs: map[string][]byte{"get": node(tc.labels, tc.taints), "patch": nil}}

@@ -120,6 +120,7 @@ func TestBackendAssignBindsOnlyAnUnboundBlaznWorker(t *testing.T) {
 		{name: "not a Blazn node", labels: `"kubernetes.io/hostname":"worker-1"`, uid: retireUID, code: "assign_rejected"},
 		{name: "retired", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint + `,{"key":"blazn.dev/retired","value":"true","effect":"NoExecute"}`, uid: retireUID, code: "assign_rejected"},
 		{name: "control plane", labels: `"blazn.dev/node":"true","node-role.kubernetes.io/control-plane":""`, taints: sandboxTaint, uid: retireUID, code: "assign_rejected"},
+		{name: "MicroK8s control plane", labels: `"blazn.dev/node":"true","node.kubernetes.io/microk8s-controlplane":"microk8s-controlplane"`, taints: sandboxTaint, uid: retireUID, code: "assign_rejected"},
 		{name: "different UID", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint, uid: "7f3c2a10-0000-4000-8000-000000000002", code: "binding_conflict"},
 	} {
 		runner := &scriptedRunner{outputs: map[string][]byte{"get": node(tc.labels, tc.taints), "label": nil}}
