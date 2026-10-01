@@ -63,3 +63,27 @@ given.
 `test-sandbox-lifecycle.sh` checks the script itself against a fake CLI,
 cluster and database: a healthy run passes, and a leftover Pod, an active
 grant, or a missing grant check each fail.
+
+## Agent Run
+
+`agent-run.py` qualifies a conversation with an Agent (plan items M6.1, M6.2,
+M6.5 and M6.7). With a CLI that is signed in and an Agent created by
+`blazn agent quickstart`, it runs
+
+    run create -> prompt -> reply -> follow-up -> reply -> finished
+        -> patch and summary Artifacts -> Sandbox released
+
+```sh
+python3 infra/qualification/agent-run.py \
+  --agent-version AGENT_VERSION_ID --harness-profile HARNESS_PROFILE_ID \
+  --ssh CLI_HOST --blazn .local/bin/blazn --expect-in-patch BLAZN_AGENT_PROOF.md \
+  --psql "ssh DATABASE_HOST sudo -n -u postgres psql -d blazn_test -At" > report.json
+```
+
+`--expect-in-patch` checks that the downloaded patch holds the Agent's change;
+the value above is the file the stand-in model route writes. The database is
+read only to find the Run's Sandbox and to count active access grants. A failed
+qualification cancels its Run unless `--keep-failed` is given.
+
+The Run finishes after the controller's idle time (five minutes on the hosted
+environment), so a passing qualification takes about ten minutes.
