@@ -293,9 +293,9 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.deepEqual(await failCreateThenDelete("controller-failed-create", true),
       { state: "deleted", status: "succeeded", code: null, result: { artifactIds: [], warnings: [] }, deletedEvents: 1 });
     assert.deepEqual(await failCreateThenDelete("controller-failed-create-undestroyed", false),
-      { state: "deleting", status: "recovery_required", code: "prior_cleanup_unverified", result: null, deletedEvents: 0 });
+      { state: "failed", status: "recovery_required", code: "prior_cleanup_unverified", result: null, deletedEvents: 0 });
     assert.deepEqual(await failCreateThenDelete("controller-failed-create-required-artifact", true, true),
-      { state: "deleting", status: "recovery_required", code: "prior_cleanup_unverified", result: null, deletedEvents: 0 });
+      { state: "failed", status: "recovery_required", code: "prior_cleanup_unverified", result: null, deletedEvents: 0 });
 
     // Recover the pre-fix failure mode: the old controller exhausts its claim
     // lease while decoding delete-after-stop, then a fresh delete retries it.
