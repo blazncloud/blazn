@@ -22,7 +22,7 @@ count as evidence, but not as acceptance. This is the same rule as the delivery 
 |---|---|---|---|
 | M0 | Hosting baseline, repo hygiene, licensing | In progress | — |
 | M1 | Identity: email-code sign-up and sign-in | **Done** | M0 |
-| M2 | Workspaces, projects, membership | **Done**, one gap (M2.4) | M1 |
+| M2 | Workspaces, projects, membership | **Done** | M1 |
 | M3 | Node registration and lifecycle | **Done** (M3.1 passed on Frontro with poc.132) | M2 |
 | M4 | Sandboxes (virtual environments) on registered nodes | **In progress** | M3 |
 | M5 | Model access: scoped provider credential and proxy | Built (proxy contract); not qualified live | M2 |
@@ -51,11 +51,11 @@ Current state:
 | Task | Acceptance |
 |---|---|
 | M0.1 Choose and add a license (recommended: Apache-2.0), `CONTRIBUTING.md`, `SECURITY.md` | License file on `main`; README badge |
-| M0.2 Commit the hosting manifests (`infra/local-test/` is uncommitted) as a reviewed `infra/frontro/` overlay | A clean apply from the repo reproduces `api-dev`, broker, issuer and controller |
-| M0.3 Hosting runbook: components, hosts, secrets locations (paths only), deploy and rollback steps | `docs/delivery/hosting-runbook.md` reviewed |
+| M0.2 ✅ Commit the hosting manifests (`infra/local-test/` is uncommitted) as a reviewed `infra/frontro/` overlay — done 2026-10-01: `infra/frontro` is exported from the live cluster and `kubectl diff` is empty | A clean apply from the repo reproduces `api-dev`, broker, issuer and controller |
+| M0.3 ✅ Hosting runbook: components, hosts, secrets locations (paths only), deploy and rollback steps — done 2026-10-01: `docs/delivery/hosting-runbook.md` | `docs/delivery/hosting-runbook.md` reviewed |
 | M0.4 ✅ Remove the temporary DB exception for the test cluster (done 2026-09-30); give the test cluster its own database before its next cycle | The rule and the line are gone (done); the test cluster uses its own database |
 | M0.5 Rotate the Resend sending key that was shared in chat | New key in the secret store; old key revoked |
-| M0.6 Pin MicroK8s: `snap refresh --hold microk8s` on every cluster host, plus a reviewed procedure for adding a new revision to the issuer's allowlist (the issuer pins 9072 and 9075) | Hold applied on all hosts (ben1 and the test control plane done 2026-09-30); the procedure is documented |
+| M0.6 (partly done) Pin MicroK8s: `snap refresh --hold microk8s` on every cluster host, plus a reviewed procedure for adding a new revision to the issuer's allowlist (the issuer pins 9072 and 9075) — holds applied 2026-10-01 on ben1–ben5 and Mac minis 1, 2, 5 (3, 4, 6 unreachable); the revision procedure is in the hosting runbook | Hold applied on all hosts (ben1 and the test control plane done 2026-09-30); the procedure is documented |
 | M0.9 Enable the `NodeRestriction` admission plugin on the Frontro API server (today any kubelet credential, including a Blazn node's, can patch every Node) | `auth can-i patch nodes/<other> --as=system:node:<self>` is `no`; existing workers unaffected |
 | M0.7 Clean up 27 stale `Init:Unknown` pods in `blazn-poc-sandboxes` and 11 stale `active` grant rows | Zero orphaned sandbox pods and grants; this needs explicit authorization |
 | M0.8 Replace `blazn.benpelo.com` in contract `$id` URIs and client generators — **Done** 2026-09-30 (#238; the old POC infra that still named it was removed) | `grep` finds no personal domain in shipped artifacts |
@@ -82,7 +82,7 @@ Delivered and qualified 34/34 by `infra/qualification/qualify-flows.py`:
 
 | Task | Acceptance |
 |---|---|
-| M2.4 Add member removal, `set-role`, `leave`, and last-owner protection to `qualify-flows.py` (the CLI already has `remove-member`, `set-role`, `leave`) | A removed member's next call is denied; the last owner cannot leave or be demoted |
+| M2.4 ✅ (done 2026-10-01: `qualify-flows.py` passes 42/42 with poc.132) Add member removal, `set-role`, `leave`, and last-owner protection to `qualify-flows.py` (the CLI already has `remove-member`, `set-role`, `leave`) | A removed member's next call is denied; the last owner cannot leave or be demoted |
 
 ## M3 — Node registration and lifecycle ✅
 

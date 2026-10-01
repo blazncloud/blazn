@@ -1,7 +1,8 @@
 # Self-serve user-flow qualification
 
 `qualify-flows.py` runs the real sign-up, sign-in, workspace, project,
-invitation, membership, role, invitation-revocation, node-list and logout flows
+invitation, membership, role change, leave, member removal, last-owner
+protection, invitation-revocation, node-list and logout flows
 against `https://api.blazn.frontro.com`. It needs no human inbox and no shared
 credentials.
 

@@ -1,0 +1,175 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: objectstore
+  namespace: blazn-test
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: objectstore
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: objectstore
+        environment: test
+        openbao: enabled
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - server
+        - /data
+        - --certs-dir
+        - /tls
+        - --console-address
+        - 127.0.0.1:9001
+        env:
+        - name: MINIO_ROOT_USER_FILE
+          value: /secrets/root-user
+        - name: MINIO_ROOT_PASSWORD_FILE
+          value: /secrets/root-password
+        - name: MINIO_BROWSER
+          value: 'off'
+        image: registry.blazn-test.internal/blazn/objectstore@sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb
+        imagePullPolicy: IfNotPresent
+        name: minio
+        ports:
+        - containerPort: 9000
+          name: https
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+            scheme: HTTPS
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 500m
+            ephemeral-storage: 256Mi
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            ephemeral-storage: 64Mi
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /data
+          name: data
+        - mountPath: /secrets
+          name: rendered
+          readOnly: true
+        - mountPath: /tls
+          name: tls
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: registry-pull
+      initContainers:
+      - args:
+        - agent
+        - -config=/agent/agent.hcl
+        image: ghcr.io/openbao/openbao@sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4
+        imagePullPolicy: IfNotPresent
+        name: secrets
+        resources:
+          limits:
+            cpu: 500m
+            ephemeral-storage: 256Mi
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            ephemeral-storage: 64Mi
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent
+          name: agent
+          readOnly: true
+        - mountPath: /ca
+          name: ca
+          readOnly: true
+        - mountPath: /identity
+          name: identity
+          readOnly: true
+        - mountPath: /rendered
+          name: rendered
+        - mountPath: /tmp
+          name: tmp
+      nodeSelector:
+        kubernetes.io/hostname: ben5
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: blazn-storage
+      serviceAccountName: blazn-storage
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: storage-data
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 1Mi
+        name: rendered
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+        name: tmp
+      - configMap:
+          defaultMode: 420
+          name: storage-agent
+        name: agent
+      - configMap:
+          defaultMode: 420
+          name: openbao-client-ca
+        name: ca
+      - name: identity
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: openbao
+              expirationSeconds: 900
+              path: token
+      - name: tls
+        secret:
+          defaultMode: 288
+          items:
+          - key: tls.crt
+            path: public.crt
+          - key: tls.key
+            path: private.key
+          - key: ca.crt
+            path: ca.crt
+          secretName: objectstore-tls

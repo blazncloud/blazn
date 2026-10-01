@@ -1,0 +1,202 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: blazn-test
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: registry
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: registry
+        environment: test
+        openbao: enabled
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: OTEL_TRACES_EXPORTER
+          value: none
+        - name: REGISTRY_HTTP_ADDR
+          value: 127.0.0.1:5000
+        - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+          value: /data
+        image: registry@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
+        imagePullPolicy: IfNotPresent
+        name: registry
+        resources:
+          limits:
+            cpu: 500m
+            ephemeral-storage: 256Mi
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            ephemeral-storage: 64Mi
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /data
+          name: data
+        - mountPath: /tmp
+          name: tmp
+      - command:
+        - nginx
+        - -c
+        - /config/nginx.conf
+        - -g
+        - daemon off;
+        image: nginxinc/nginx-unprivileged@sha256:9f1d635195267228edfdad0bbaacf390031785924f10f8449ff9c934ff765290
+        imagePullPolicy: IfNotPresent
+        name: pull-gateway
+        ports:
+        - containerPort: 8443
+          name: https
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 8443
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 500m
+            ephemeral-storage: 256Mi
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            ephemeral-storage: 64Mi
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /config
+          name: nginx
+          readOnly: true
+        - mountPath: /tls
+          name: tls
+          readOnly: true
+        - mountPath: /secrets
+          name: rendered
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: registry-pull
+      initContainers:
+      - args:
+        - agent
+        - -config=/agent/agent.hcl
+        image: ghcr.io/openbao/openbao@sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4
+        imagePullPolicy: IfNotPresent
+        name: secrets
+        resources:
+          limits:
+            cpu: 500m
+            ephemeral-storage: 256Mi
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            ephemeral-storage: 64Mi
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent
+          name: agent
+          readOnly: true
+        - mountPath: /ca
+          name: ca
+          readOnly: true
+        - mountPath: /identity
+          name: identity
+          readOnly: true
+        - mountPath: /rendered
+          name: rendered
+        - mountPath: /tmp
+          name: tmp
+      nodeSelector:
+        kubernetes.io/hostname: ben5
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: blazn-registry
+      serviceAccountName: blazn-registry
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: registry-data
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 1Mi
+        name: rendered
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+        name: tmp
+      - configMap:
+          defaultMode: 420
+          name: registry-agent
+        name: agent
+      - configMap:
+          defaultMode: 420
+          name: openbao-client-ca
+        name: ca
+      - name: identity
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: openbao
+              expirationSeconds: 900
+              path: token
+      - name: tls
+        secret:
+          defaultMode: 288
+          items:
+          - key: tls.crt
+            path: public.crt
+          - key: tls.key
+            path: private.key
+          - key: ca.crt
+            path: ca.crt
+          secretName: registry-tls
+      - configMap:
+          defaultMode: 420
+          name: registry-nginx
+        name: nginx

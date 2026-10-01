@@ -1,0 +1,324 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-dev
+  namespace: blazn-test
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: blazn-api-dev
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: blazn-api-dev
+        environment: test
+        openbao: enabled
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: RESEND_API_KEY_FILE
+          value: /email/resend_api_key
+        - name: EMAIL_CODE_HMAC_KEY_FILE
+          value: /email/email_code_key
+        - name: EMAIL_FROM
+          value: Blazn <no-reply@mail.blazn.benpelo.com>
+        - name: NODE_ENV
+          value: production
+        - name: PORT
+          value: '8080'
+        - name: BIND_ADDRESS
+          value: 127.0.0.1
+        - name: PUBLIC_URL
+          value: https://api.blazn.frontro.com
+        - name: DATABASE_URL_FILE
+          value: /secrets/database_url
+        - name: S3_ENDPOINT
+          value: https://objectstore.blazn-test.svc.cluster.local
+        - name: S3_REGION
+          value: us-east-1
+        - name: S3_BUCKET
+          value: blazn-test
+        - name: S3_ACCESS_KEY_FILE
+          value: /secrets/s3_access_key
+        - name: S3_SECRET_KEY_FILE
+          value: /secrets/s3_secret_key
+        - name: NODE_EXTRA_CA_CERTS
+          value: /public/object-ca.crt
+        - name: TRUSTED_PROXY_CIDRS
+          value: 127.0.0.1/32,::1/128
+        - name: TRUSTED_PROXY_HOPS
+          value: '1'
+        - name: TRUSTED_PROXY_SECRET_FILE
+          value: /secrets/proxy_key
+        - name: WORKSPACE_INVITATION_HMAC_KEY_FILE
+          value: /secrets/invitation_key
+        - name: NODE_ENROLLMENT_HMAC_FILE
+          value: /node/enrollment-hmac-v1
+        - name: BLAZN_NODE_BROKER_LOOPBACK
+          value: enabled
+        - name: BROWSER_ORIGINS
+          value: https://blazn.frontro.com,https://api.blazn.frontro.com
+        - name: BLAZN_SANDBOX_ACCESS_URL
+          value: http://10.152.183.207:8080/
+        - name: BLAZN_NODE_BROKER_URL
+          value: http://192.168.0.100:18081/
+        - name: BLAZN_NODE_BROKER_CALLER_KEY_FILE
+          value: /node/caller-key
+        - name: NODE_PLAN_SIGNING_KEY_ID
+          value: control-plane-node-plan/v1
+        - name: NODE_PLAN_SIGNING_PRIVATE_KEY_FILE
+          value: /node/signing-private-v1.b64url
+        - name: NODE_INSTALL_PLAN_TEMPLATE_FILE
+          value: /node/node-install-plan-template-v1.json
+        - name: EMAIL_CAPTURE_SMTP
+          value: 10.152.183.239:1025
+        - name: EMAIL_CAPTURE_DOMAIN
+          value: blazn.invalid
+        image: registry.blazn-test.internal/blazn/control-api@sha256:ca927c556ec80a5c6114a4effef279fa06ddd654f53696d4cafd7ed63a5f28f6
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /healthz
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          successThreshold: 1
+          timeoutSeconds: 5
+        name: api
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 8081
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            ephemeral-storage: 256Mi
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            ephemeral-storage: 128Mi
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /email
+          name: email
+          readOnly: true
+        - mountPath: /secrets
+          name: rendered
+          readOnly: true
+        - mountPath: /public
+          name: public
+          readOnly: true
+        - mountPath: /tmp
+          name: api-tmp
+        - mountPath: /node
+          name: node
+          readOnly: true
+      - args:
+        - agent
+        - -config=/agent/sidecar.hcl
+        image: ghcr.io/openbao/openbao@sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4
+        imagePullPolicy: IfNotPresent
+        name: secrets-renew
+        resources:
+          limits:
+            cpu: 200m
+            ephemeral-storage: 64Mi
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            ephemeral-storage: 32Mi
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent
+          name: agent
+          readOnly: true
+        - mountPath: /ca
+          name: ca
+          readOnly: true
+        - mountPath: /identity
+          name: identity
+          readOnly: true
+        - mountPath: /rendered
+          name: rendered
+        - mountPath: /tmp
+          name: agent-tmp
+      - command:
+        - nginx
+        - -c
+        - /config/nginx.conf
+        - -g
+        - daemon off;
+        image: nginxinc/nginx-unprivileged@sha256:9f1d635195267228edfdad0bbaacf390031785924f10f8449ff9c934ff765290
+        imagePullPolicy: IfNotPresent
+        name: proxy
+        ports:
+        - containerPort: 8081
+          name: proxy
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 100m
+            ephemeral-storage: 64Mi
+            memory: 128Mi
+          requests:
+            cpu: 25m
+            ephemeral-storage: 32Mi
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /config
+          name: proxy-config
+          readOnly: true
+        - mountPath: /secrets
+          name: rendered
+          readOnly: true
+        - mountPath: /tmp
+          name: proxy-tmp
+      dnsPolicy: ClusterFirst
+      hostAliases:
+      - hostnames:
+        - frontro-db-1
+        ip: 192.168.0.105
+      imagePullSecrets:
+      - name: registry-pull
+      initContainers:
+      - args:
+        - agent
+        - -config=/agent/init.hcl
+        image: ghcr.io/openbao/openbao@sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4
+        imagePullPolicy: IfNotPresent
+        name: secrets
+        resources:
+          limits:
+            cpu: 200m
+            ephemeral-storage: 64Mi
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            ephemeral-storage: 32Mi
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent
+          name: agent
+          readOnly: true
+        - mountPath: /ca
+          name: ca
+          readOnly: true
+        - mountPath: /identity
+          name: identity
+          readOnly: true
+        - mountPath: /rendered
+          name: rendered
+        - mountPath: /tmp
+          name: agent-tmp
+      nodeSelector:
+        kubernetes.io/hostname: ben5
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: blazn-api
+      serviceAccountName: blazn-api
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: email
+        secret:
+          defaultMode: 288
+          secretName: api-dev-email
+      - configMap:
+          defaultMode: 420
+          name: api-agent-dev
+        name: agent
+      - configMap:
+          defaultMode: 420
+          name: openbao-client-ca
+        name: ca
+      - configMap:
+          defaultMode: 420
+          name: api-public-ca
+        name: public
+      - name: identity
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: openbao
+              expirationSeconds: 900
+              path: token
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: rendered
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: api-tmp
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: agent-tmp
+      - configMap:
+          defaultMode: 420
+          name: api-proxy-dev
+        name: proxy-config
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: proxy-tmp
+      - name: node
+        secret:
+          defaultMode: 288
+          secretName: api-dev-node

@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-dev-email-capture-egress
+  namespace: blazn-test
+spec:
+  egress:
+  - ports:
+    - port: 1025
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: blazn-identity-dev
+      podSelector:
+        matchLabels:
+          app: identity-mail
+  podSelector:
+    matchLabels:
+      app: blazn-api-dev
+  policyTypes:
+  - Egress

@@ -1,0 +1,72 @@
+apiVersion: v1
+data:
+  init.hcl: |
+    exit_after_auth = true
+    pid_file = "/tmp/agent.pid"
+    vault { address = "https://openbao.frontro-secrets.svc.cluster.local:8200" ca_cert = "/ca/ca.crt" }
+    auto_auth { method "kubernetes" { mount_path = "auth/kubernetes" config = { role = "blazn-test-api", token_path = "/identity/token" } } }
+    template { error_on_missing_key = true destination = "/rendered/database_url" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}postgresql://blazn_runtime:{{ .Data.data.runtime_password }}@frontro-db-1:5432/blazn_test?sslmode=verify-full&sslrootcert=/public/postgres-ca.crt{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/s3_access_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.s3_access_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/s3_secret_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.s3_secret_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/proxy_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.proxy_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/invitation_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.invitation_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/node_enrollment_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.node_enrollment_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/proxy-header.conf" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}proxy_set_header X-Blazn-Proxy-Authorization {{ .Data.data.proxy_key }};{{ end }}
+    EOT
+    }
+  sidecar.hcl: |
+    exit_after_auth = false
+    pid_file = "/tmp/agent.pid"
+    vault { address = "https://openbao.frontro-secrets.svc.cluster.local:8200" ca_cert = "/ca/ca.crt" }
+    auto_auth { method "kubernetes" { mount_path = "auth/kubernetes" config = { role = "blazn-test-api", token_path = "/identity/token" } } }
+    template { error_on_missing_key = true destination = "/rendered/database_url" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}postgresql://blazn_runtime:{{ .Data.data.runtime_password }}@frontro-db-1:5432/blazn_test?sslmode=verify-full&sslrootcert=/public/postgres-ca.crt{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/s3_access_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.s3_access_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/s3_secret_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.s3_secret_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/proxy_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.proxy_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/invitation_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.invitation_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/node_enrollment_key" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}{{ .Data.data.node_enrollment_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/proxy-header.conf" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/api" }}proxy_set_header X-Blazn-Proxy-Authorization {{ .Data.data.proxy_key }};{{ end }}
+    EOT
+    }
+kind: ConfigMap
+metadata:
+  name: api-agent
+  namespace: blazn-test

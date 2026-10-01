@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-egress
+  namespace: blazn-identity-dev
+spec:
+  egress:
+  - ports:
+    - port: 5432
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app: identity-postgres
+  podSelector:
+    matchLabels:
+      app: identity-api
+  policyTypes:
+  - Egress

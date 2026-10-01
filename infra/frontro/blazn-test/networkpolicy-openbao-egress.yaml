@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openbao-egress
+  namespace: blazn-test
+spec:
+  egress:
+  - ports:
+    - port: 8200
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: frontro-secrets
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: openbao
+  podSelector:
+    matchLabels:
+      openbao: enabled
+  policyTypes:
+  - Egress

@@ -1,0 +1,19 @@
+apiVersion: v1
+data:
+  agent.hcl: |
+    exit_after_auth = true
+    pid_file = "/tmp/agent.pid"
+    vault { address = "https://openbao.frontro-secrets.svc.cluster.local:8200" ca_cert = "/ca/ca.crt" }
+    auto_auth { method "kubernetes" { mount_path = "auth/kubernetes" config = { role = "blazn-test-storage", token_path = "/identity/token" } } }
+    template { error_on_missing_key = true destination = "/rendered/root-user" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/storage" }}{{ .Data.data.root_access_key }}{{ end }}
+    EOT
+    }
+    template { error_on_missing_key = true destination = "/rendered/root-password" perms = "0400" contents = <<EOT
+    {{ with secret "apps/data/blazn/test/storage" }}{{ .Data.data.root_secret_key }}{{ end }}
+    EOT
+    }
+kind: ConfigMap
+metadata:
+  name: storage-agent
+  namespace: blazn-test

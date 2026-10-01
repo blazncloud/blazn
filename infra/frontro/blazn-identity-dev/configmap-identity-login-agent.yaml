@@ -1,0 +1,32 @@
+apiVersion: v1
+data:
+  init.hcl: |
+    exit_after_auth=true
+    pid_file="/tmp/agent.pid"
+    vault { address="https://openbao.frontro-secrets.svc.cluster.local:8200" ca_cert="/ca/ca.crt" }
+    auto_auth { method "kubernetes" { mount_path="auth/kubernetes" config={role="blazn-dev-identity-login",token_path="/identity/token"} } }
+    template { error_on_missing_key=true destination="/rendered/login-client.pat" perms="0400" contents=<<EOT
+    {{- with secret "apps/data/blazn/development/identity/login" -}}{{ .Data.data.login_pat }}{{- end -}}
+    EOT
+    }
+    template { error_on_missing_key=true destination="/rendered/provider-gate.pat" perms="0400" contents=<<EOT
+    {{- with secret "apps/data/blazn/development/identity/login" -}}{{ .Data.data.gate_pat }}{{- end -}}
+    EOT
+    }
+  sidecar.hcl: |
+    exit_after_auth=false
+    pid_file="/tmp/agent.pid"
+    vault { address="https://openbao.frontro-secrets.svc.cluster.local:8200" ca_cert="/ca/ca.crt" }
+    auto_auth { method "kubernetes" { mount_path="auth/kubernetes" config={role="blazn-dev-identity-login",token_path="/identity/token"} } }
+    template { error_on_missing_key=true destination="/rendered/login-client.pat" perms="0400" contents=<<EOT
+    {{- with secret "apps/data/blazn/development/identity/login" -}}{{ .Data.data.login_pat }}{{- end -}}
+    EOT
+    }
+    template { error_on_missing_key=true destination="/rendered/provider-gate.pat" perms="0400" contents=<<EOT
+    {{- with secret "apps/data/blazn/development/identity/login" -}}{{ .Data.data.gate_pat }}{{- end -}}
+    EOT
+    }
+kind: ConfigMap
+metadata:
+  name: identity-login-agent
+  namespace: blazn-identity-dev

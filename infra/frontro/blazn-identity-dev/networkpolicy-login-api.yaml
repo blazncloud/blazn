@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: login-api
+  namespace: blazn-identity-dev
+spec:
+  egress:
+  - ports:
+    - port: 8080
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app: identity-api
+  podSelector:
+    matchLabels:
+      app: identity-login
+  policyTypes:
+  - Egress
