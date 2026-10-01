@@ -251,7 +251,7 @@ gateway's ConfigMap (`moments-direct/moments-direct-gateway`, key
 gateway was restarted on 2026-10-01 to apply it (about 6 seconds of downtime);
 the retired hosts and paths now answer 404.
 
-**The gateway only reads that file at startup.** Traefik is configured with
+**Superseded (see "Model endpoint on the gateway"): the gateway now watches its config directory.** At the time, the gateway only read that file at startup. Traefik is configured with
 `--providers.file.filename`, which does not notice a ConfigMap update (the
 update arrives as a symlink swap, and Traefik watches for the file's own
 name). A change to `dynamic.yml` therefore takes effect at the gateway's next
@@ -259,6 +259,48 @@ restart. The gateway is one replica with the `Recreate` strategy and also
 serves Moments, The Archive and retailer-apply, so a restart is a few seconds
 of downtime for all of them. Validate a changed file first by loading it in
 the same Traefik image and listing `/api/http/routers`.
+
+## Model endpoint on the gateway (`sparks.frontro.com`)
+
+The shared gateway also publishes the model server on Spark 1
+(`192.168.0.117:8000`) as `https://sparks.frontro.com`, for clients outside
+the LAN. Only `GET /v1/models`, `POST /v1/chat/completions` and
+`POST /v1/completions` are routed. Blazn does not use this name: the Agent Run
+controller reaches the Spark directly.
+
+Every request must carry `Authorization: Bearer <key>`. The gateway asks the
+`sparks-auth` service in namespace `sparks-edge` (Traefik `forwardAuth`
+middleware `sparks-key`); it answers 204 for a known key and 401 otherwise,
+and the request never reaches the Spark without it. The accepted keys are in
+Secret `sparks-auth-keys` (key `keys.conf`, an nginx `map` with one line per
+key). Today it holds one key, the same one as `homeai-glm-key`.
+
+To add or rotate a key, edit the Secret and restart the service:
+
+```sh
+kubectl -n sparks-edge edit secret sparks-auth-keys
+kubectl -n sparks-edge rollout restart deployment/sparks-auth
+```
+
+Check it (expect 401, 401, then the model's answer or 502 while the Spark is
+off):
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://sparks.frontro.com/v1/models
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer wrong' https://sparks.frontro.com/v1/models
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $KEY" https://sparks.frontro.com/v1/models
+```
+
+If `sparks-auth` is down the route answers 500: it fails closed. The check
+depends on the `middlewares: [sparks-key]` line of router `sparks-api` in the
+gateway ConfigMap; anyone who replaces that ConfigMap from an older copy
+removes the check, so re-run `export.py --check` after gateway changes. The
+file before this change is on `ben1` in `~/blazn-backups`.
+
+The gateway now loads its config with `--providers.file.directory` and
+`watch=true`, so a ConfigMap change takes effect within about 20 seconds
+without a restart. Still validate a changed file in the same Traefik image
+first.
 
 ## Known hardening gaps
 

@@ -23,7 +23,7 @@ import tempfile
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent
-NAMESPACES = ["blazn-test", "blazn-identity-dev"]
+NAMESPACES = ["blazn-test", "blazn-identity-dev", "sparks-edge"]
 KINDS = ("deployment,service,configmap,networkpolicy,serviceaccount,role,rolebinding,persistentvolumeclaim,"
          "certificate.cert-manager.io,issuer.cert-manager.io")
 SKIP = {("ConfigMap", "kube-root-ca.crt"), ("ServiceAccount", "default")}
@@ -106,7 +106,7 @@ def blazn_edge_routes(dynamic):
             if not isinstance(entries, dict):
                 continue
             for name, value in entries.items():
-                if name.startswith("blazn-"):
+                if name.startswith(("blazn-", "sparks-")):
                     selected.setdefault(section, {}).setdefault(group, {})[name] = value
     return selected
 
