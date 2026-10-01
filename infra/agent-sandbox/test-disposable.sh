@@ -180,7 +180,7 @@ done <"$tmp/phase4c-inventory/phase4c-targets"
 sudo -n chown -R "$(id -u):$(id -g)" "$tmp/phase4c-transaction"
 kctl delete clusterqueue "blazn-phase4c-$cluster_suffix" --wait=true --timeout=120s >/dev/null
 kctl delete resourceflavor "blazn-phase4c-$cluster_suffix" --wait=true --timeout=120s >/dev/null
-kctl label node "$node" blazn.dev/sandbox-eligible->/dev/null
+kctl label node "$node" blazn.dev/sandbox-eligible- >/dev/null
 
 kapply <"$tmp/agent-sandbox.yaml" >/dev/null
 kctl wait --for=condition=Available deployment/agent-sandbox-controller -n agent-sandbox-system --timeout=180s
