@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -19,6 +20,8 @@ type fakeBackend struct {
 	failIssue, failRevoke bool
 	now                   time.Time
 	failHealthy           bool
+	healthGate            chan struct{}
+	healthCalls           atomic.Int32
 	observation           NodeObservation
 	failObserve           bool
 	retired               []string
@@ -62,6 +65,10 @@ func (f *fakeBackend) Revoke(context.Context, string) error {
 	return nil
 }
 func (f *fakeBackend) Healthy(context.Context) error {
+	f.healthCalls.Add(1)
+	if f.healthGate != nil {
+		<-f.healthGate
+	}
 	if f.failHealthy {
 		return errors.New("unhealthy detail")
 	}
