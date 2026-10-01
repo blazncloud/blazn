@@ -115,6 +115,7 @@ Delivered for sandboxes on Blazn nodes (2026-10-01):
 - Boundary transaction `8dd55023` allows that toleration (prior journal reconstructed from live UIDs, then superseded).
 - #240: `sandbox-images.yml` publishes the helper and development images to public GHCR; the controller's helper image points there.
 - ben3's leftover POC `sandbox-eligible` label was removed, so only Blazn nodes are eligible.
+- #254 and #266: the sandbox controller holds no cluster-scoped authority. It reports only the scheduled Pod's node name, migration 041 resolves the Node UID from Blazn's node registry, and the phase-5 installer no longer creates the `blazn-sandbox-controller-node-observer` ClusterRole or binding. On Frontro, `kubectl auth can-i get nodes` for the controller ServiceAccount returns `no`.
 
 | Task | Acceptance |
 |---|---|
