@@ -302,6 +302,20 @@ The gateway now loads its config with `--providers.file.directory` and
 without a restart. Still validate a changed file in the same Traefik image
 first.
 
+## Retired node names (runtime state)
+
+ConfigMap `blazn-test/blazn-node-registration` has two keys. `frontroHosts` is
+configuration and is in the repository. `retiredNodeNames` is written by the
+worker issuer on `ben1`: it adds a node's name when the node retires and
+removes it when a credential is issued for that name again. The registration
+guard policy reads it, so the key must always exist.
+
+`export.py` leaves that key out, so it is neither reported as drift nor reset
+by `kubectl apply -k infra/frontro/blazn-test`. This relies on the key being
+absent from the object's `last-applied-configuration` annotation (removed on
+2026-10-02). If the ConfigMap is ever recreated, create the key by hand with an
+empty value and do not put it back in the manifest.
+
 ## Known hardening gaps
 
 - The Frontro API server runs with `--authorization-mode=Node,RBAC` but

@@ -36,6 +36,13 @@ EDGE_CONFIGMAP = ("moments-direct", "moments-direct-gateway", "dynamic.yml")
 CLUSTER_KINDS = "validatingadmissionpolicy,validatingadmissionpolicybinding"
 CLUSTER_SELECTOR = "app.kubernetes.io/part-of=blazn-hosting"
 CLUSTER_SCOPED = {"Namespace", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"}
+# Data keys that hold runtime state, written by a running component. They are
+# left out of the export: the repository must neither report them as drift nor
+# reset them when a manifest is applied.
+RUNTIME_DATA_KEYS = {
+    # The worker issuer adds a name when a node retires and removes it on reissue.
+    ("ConfigMap", "blazn-test", "blazn-node-registration"): {"retiredNodeNames"},
+}
 
 
 class Dumper(yaml.SafeDumper):
@@ -74,6 +81,9 @@ def clean(item):
     for key in ("data", "binaryData", "rules", "roleRef", "subjects", "automountServiceAccountToken"):
         if key in item:
             out[key] = item[key]
+    runtime = RUNTIME_DATA_KEYS.get((kind, item["metadata"].get("namespace"), item["metadata"]["name"]))
+    if runtime and "data" in out:
+        out["data"] = {k: v for k, v in out["data"].items() if k not in runtime}
     spec = json.loads(json.dumps(item.get("spec"))) if "spec" in item else None
     if kind == "Service":
         for key in ("clusterIP", "clusterIPs"):
