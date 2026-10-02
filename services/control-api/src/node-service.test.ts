@@ -203,3 +203,15 @@ test("drain requires the node's own identity, a fresh timestamp and its own boun
   const foreign=request({kubernetesBinding:{...binding,nodeUid:"uid-b"}});await rejects(foreign,prove(foreign),"version_conflict");
   lifecycle="removed";await rejects(good,prove(good),"identity_rejected");
 });
+
+test("rebootstrap and drain proofs are domain separated",async()=>{
+  const pair=generateKeyPairSync("ed25519");const publicKey=pair.publicKey.export({format:"jwk"}).x!;const binding={clusterId:"cluster-a",nodeName:"ben2",nodeUid:"uid-a",resourceVersion:"9"};
+  const tx=baseTx({activeIdentity:async()=>({nodeId,workspaceId,generation:1,publicKey,publicKeyFingerprint:"c".repeat(64),signingKeyId:"node/v1",lifecycleState:"active",trustState:"verified",nodeVersion:1}),
+    nodeById:async()=>({id:nodeId,workspaceId,name:"ben2",kind:"shared" as const,platform:"linux" as const,architecture:"amd64" as const,lifecycleState:"active" as const,trustState:"verified" as const,agentEligible:true,version:1,capabilityVersion:1,identity:null,kubernetesBinding:binding,createdAt:"2026-08-22T00:00:00Z",updatedAt:"2026-08-22T00:00:00Z"})});
+  const service=new NodeService(store(tx),async()=>Buffer.alloc(32),planFactory,()=>new Date("2026-08-22T12:00:00Z"));
+  const body={nodeId,identityGeneration:1,sentAt:"2026-08-22T12:00:00Z",kubernetesBinding:binding};
+  const prove=(prefix:string)=>sign(null,Buffer.from(`${prefix}\n${canonicalJson(body)}`),pair.privateKey).toString("base64url");
+  assert.deepEqual(await service.rebootstrap(body,prove("blazn-node-rebootstrap-v1")),binding);
+  await assert.rejects(()=>service.rebootstrap(body,prove("blazn-node-drain-v1")),(e:unknown)=>e instanceof NodeHttpError&&e.code==="identity_rejected");
+  await assert.rejects(()=>service.drain(body,prove("blazn-node-rebootstrap-v1")),(e:unknown)=>e instanceof NodeHttpError&&e.code==="identity_rejected");
+});

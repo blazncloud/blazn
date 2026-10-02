@@ -21,7 +21,7 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256          = "bd84bcc4415a95cc0dae69ed375076b7d2a33b3dc4ffc18fba1a1fed136f2209"
+	openAPISHA256          = "e0921f9de1ce934538a4700153a4172d39dada9fecfe4f44bdddace78dc9802e"
 	commonOpenAPISHA256    = "291e9dcd2ed58b1fe653c5c38b4f0cdd6b873533ccb39716af3d05398c4fc275"
 	planSHA256             = "e8cbc6566ae144e020338d173cea6c28c1cca616306cccdc3c2ffa69045bf123"
 	receiptSHA256          = "311cee0270fd2051db8fef7b8f2a513277b602be2d03241613c3a9a9dd1b0551"
@@ -50,6 +50,7 @@ var operations = []operation{
 	{"/v1/node-service/activations", "post", "activateNode", "200", "NodeActivationRequest", "NodeActivationResponse", "nodeProof"},
 	{"/v1/node-service/retirements", "post", "retireNode", "200", "NodeRetirementRequest", "Node", "nodeProof"},
 	{"/v1/node-service/drains", "post", "drainNode", "200", "NodeDrainRequest", "NodeDrainResponse", "nodeProof"},
+	{"/v1/node-service/rebootstraps", "post", "rebootstrapNode", "200", "NodeRebootstrapRequest", "NodeRebootstrapResponse", "nodeProof"},
 	{"/v1/node-service/join-credentials", "post", "issueNodeJoinCredential", "200", "JoinCredentialRequest", "JoinCredential", "nodeProof"},
 	{"/v1/node-service/join-credentials/{issuanceId}/consume", "post", "consumeNodeJoinCredential", "200", "ConsumeJoinCredentialRequest", "Node", "nodeProof"},
 }

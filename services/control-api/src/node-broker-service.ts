@@ -98,6 +98,16 @@ export class NodeBrokerService {
     const result = await this.providerCall((signal) => this.issuer.drain!({ clusterId: input.clusterId, expectedNodeName: input.nodeName, nodeUid: input.nodeUid }, signal));
     return result.drained;
   }
+  // rebootstrapNode returns an activated worker's Node to bootstrap quarantine. The issuer touches
+  // only a Blazn worker with the bound UID.
+  async rebootstrapNode(input: { clusterId: string; nodeName: string; nodeUid: string }): Promise<boolean> {
+    if (!input.clusterId || input.clusterId.length > 128 || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(input.nodeName) || !UUID.test(input.nodeUid)) {
+      invalid("worker rebootstrap binding is invalid");
+    }
+    if (!this.issuer.rebootstrap) throw new Error("worker rebootstrapper is unavailable");
+    const result = await this.providerCall((signal) => this.issuer.rebootstrap!({ clusterId: input.clusterId, expectedNodeName: input.nodeName, nodeUid: input.nodeUid }, signal));
+    return result.rebootstrapped;
+  }
 
 
 

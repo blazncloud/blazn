@@ -81,3 +81,29 @@ func TestUninstallQuarantineRetriesAConflictingPatch(t *testing.T) {
 		t.Fatalf("conflicting quarantine was not retried: patches=%d err=%v", patches, err)
 	}
 }
+
+func TestFreshBootstrapRollbackLeavesAQuarantinedNodeQuarantined(t *testing.T) {
+	// The control plane already returned the Node to quarantine (rebootstrap),
+	// so rolling back the bootstrap taint must not remove it and make a still
+	// joined worker schedulable before it leaves.
+	quarantined := `{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"42","labels":{"blazn.dev/node":"true"}},"spec":{"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"}]}}`
+	patches := 0
+	engine := NativeRootEngine{Platform: "linux", Commands: scriptedExecutor{run: func(path string, args []string, _ []byte) ([]byte, error) {
+		switch args[0] {
+		case "get":
+			return []byte(quarantined), nil
+		case "patch":
+			patches++
+			return []byte(quarantined), nil
+		}
+		return nil, errors.New("unexpected kubectl operation")
+	}}}
+	plan := testJoinPlan("linux")
+	plan.Mode = client.NodeModeFresh
+	mutation := client.NodeInstallMutation{Ordinal: 10, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap",
+		Desired: map[string]any{"key": "blazn.dev/bootstrap", "value": "pending", "effect": "NoSchedule"}}
+	join := &RootJoinBinding{ExpectedNodeName: "worker-1", ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "42"}
+	if err := engine.rollback(context.Background(), plan, mutation, PriorState{State: "absent"}, t.TempDir(), join); err != nil || patches != 0 {
+		t.Fatalf("err=%v patches=%d", err, patches)
+	}
+}

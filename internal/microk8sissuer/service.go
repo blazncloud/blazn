@@ -34,6 +34,7 @@ type Backend interface {
 	Assign(context.Context, string, string, string) (bool, error)
 	Hold(context.Context, string, string, string) (bool, error)
 	Drain(context.Context, string, string) (bool, error)
+	Rebootstrap(context.Context, string, string) (bool, error)
 	Healthy(context.Context) error
 }
 type NodeObservation struct {
@@ -92,6 +93,9 @@ func (s *Service) Handle(ctx context.Context, req Request) (any, error) {
 	}
 	if req.Operation == "drain" {
 		return s.drain(ctx, req)
+	}
+	if req.Operation == "rebootstrap" {
+		return s.rebootstrap(ctx, req)
 	}
 	return s.revoke(ctx, req.ProviderHandle)
 }
@@ -498,6 +502,25 @@ func (s *Service) drain(ctx context.Context, req Request) (DrainResponse, error)
 			return &ProtocolError{Code: "microk8s_unavailable", Message: "worker drain failed"}
 		}
 		response = DrainResponse{SchemaVersion: SchemaVersion, Operation: "drain", ClusterID: req.ClusterID, NodeName: req.ExpectedNodeName, NodeUID: req.NodeUID, Drained: drained}
+		return nil
+	})
+	return response, err
+}
+
+// rebootstrap returns an activated Blazn worker's Node to bootstrap
+// quarantine, so it receives nothing new while it is uninstalled.
+func (s *Service) rebootstrap(ctx context.Context, req Request) (RebootstrapResponse, error) {
+	var response RebootstrapResponse
+	err := s.locked(ctx, func() error {
+		rebootstrapped, err := s.backend.Rebootstrap(ctx, req.ExpectedNodeName, req.NodeUID)
+		if err != nil {
+			var protocol *ProtocolError
+			if errors.As(err, &protocol) {
+				return protocol
+			}
+			return &ProtocolError{Code: "microk8s_unavailable", Message: "worker rebootstrap failed"}
+		}
+		response = RebootstrapResponse{SchemaVersion: SchemaVersion, Operation: "rebootstrap", ClusterID: req.ClusterID, NodeName: req.ExpectedNodeName, NodeUID: req.NodeUID, Rebootstrapped: rebootstrapped}
 		return nil
 	})
 	return response, err

@@ -78,6 +78,12 @@ export interface WorkerCredentialIssuer {
     request: WorkerDrainRequest,
     signal: AbortSignal,
   ): Promise<{ drained: boolean }>;
+  // rebootstrap returns the Node to bootstrap quarantine; it takes the same
+  // binding as a drain.
+  rebootstrap?(
+    request: WorkerDrainRequest,
+    signal: AbortSignal,
+  ): Promise<{ rebootstrapped: boolean }>;
 }
 
 // Placement holds keep new sandboxes off a Blazn node that is not active.

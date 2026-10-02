@@ -1,5 +1,5 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: bd84bcc4415a95cc0dae69ed375076b7d2a33b3dc4ffc18fba1a1fed136f2209
+// OpenAPI SHA256: e0921f9de1ce934538a4700153a4172d39dada9fecfe4f44bdddace78dc9802e
 // NodeInstallPlan SHA256: e8cbc6566ae144e020338d173cea6c28c1cca616306cccdc3c2ffa69045bf123
 // NodeInstallReceipt SHA256: 311cee0270fd2051db8fef7b8f2a513277b602be2d03241613c3a9a9dd1b0551
 // NodeOperationReceipt SHA256: 57c8b4fe4f633f9e4d8ba5c14ec1039f667941b7e4936b7d5f7b6def0c907a67
@@ -168,6 +168,15 @@ type NodeDrainRequest struct {
 
 type NodeDrainResponse struct {
 	Drained bool `json:"drained"`
+}
+
+// NodeRebootstrapRequest asks the control plane to return the node's own
+// bound Kubernetes Node to bootstrap quarantine before it is uninstalled. It
+// is proven by the node identity over blazn-node-rebootstrap-v1.
+type NodeRebootstrapRequest = NodeDrainRequest
+
+type NodeRebootstrapResponse struct {
+	Rebootstrapped bool `json:"rebootstrapped"`
 }
 
 type NodeActivationRequest struct {
@@ -2538,6 +2547,18 @@ func (c *Client) DrainNode(ctx context.Context, nodeProof string, request NodeDr
 		return output, fmt.Errorf("node drain sentAt is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/drains", "", nodeProof, "", request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RebootstrapNode(ctx context.Context, nodeProof string, request NodeRebootstrapRequest) (NodeRebootstrapResponse, error) {
+	var output NodeRebootstrapResponse
+	if nodeProof == "" || !nodeUUIDPattern.MatchString(request.NodeID) || request.IdentityGeneration < 1 || !validKubernetesBinding(request.KubernetesBinding) {
+		return output, fmt.Errorf("node rebootstrap request is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, request.SentAt); err != nil {
+		return output, fmt.Errorf("node rebootstrap sentAt is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/rebootstraps", "", nodeProof, "", request, &output, http.StatusOK)
 	return output, err
 }
 

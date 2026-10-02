@@ -45,6 +45,17 @@ type DrainResponse struct {
 	Drained       bool   `json:"drained"`
 }
 
+// RebootstrapResponse reports that a Blazn worker's Node is back in
+// bootstrap quarantine. Rebootstrapped is false when it already was.
+type RebootstrapResponse struct {
+	SchemaVersion  string `json:"schemaVersion"`
+	Operation      string `json:"operation"`
+	ClusterID      string `json:"clusterId"`
+	NodeName       string `json:"nodeName"`
+	NodeUID        string `json:"nodeUid"`
+	Rebootstrapped bool   `json:"rebootstrapped"`
+}
+
 // HoldResponse reports the placement hold now on a Blazn worker's Node; an
 // empty reason means no hold. Changed is false when it already matched.
 type HoldResponse struct {
@@ -161,6 +172,13 @@ func DecodeRequest(data []byte) (Request, error) {
 		}
 		if len(req.ClusterID) < 1 || len(req.ClusterID) > 128 || !namePattern.MatchString(req.ExpectedNodeName) || !uuidPattern.MatchString(req.NodeUID) || !uuidPattern.MatchString(req.WorkspaceID) {
 			return Request{}, invalid("assign binding is invalid")
+		}
+	case "rebootstrap":
+		for _, key := range []string{"clusterId", "expectedNodeName", "nodeUid"} {
+			allowed[key] = true
+		}
+		if len(req.ClusterID) < 1 || len(req.ClusterID) > 128 || !namePattern.MatchString(req.ExpectedNodeName) || !uuidPattern.MatchString(req.NodeUID) {
+			return Request{}, invalid("rebootstrap binding is invalid")
 		}
 	case "drain":
 		for _, key := range []string{"clusterId", "expectedNodeName", "nodeUid"} {

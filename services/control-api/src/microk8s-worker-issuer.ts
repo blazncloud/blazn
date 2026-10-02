@@ -133,6 +133,15 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
     }
     return { drained: response.drained };
   }
+  async rebootstrap(request: WorkerDrainRequest, signal: AbortSignal): Promise<{ rebootstrapped: boolean }> {
+    const response = object(await this.call({ schemaVersion, operation: "rebootstrap", ...request }, signal));
+    exactKeys(response, ["schemaVersion", "operation", "clusterId", "nodeName", "nodeUid", "rebootstrapped"]);
+    if (response.schemaVersion !== schemaVersion || response.operation !== "rebootstrap" || response.clusterId !== request.clusterId ||
+        response.nodeName !== request.expectedNodeName || response.nodeUid !== request.nodeUid || typeof response.rebootstrapped !== "boolean") {
+      throw new Error("MicroK8s worker issuer returned an invalid response");
+    }
+    return { rebootstrapped: response.rebootstrapped };
+  }
 
 
 
@@ -160,7 +169,7 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
             if (res.statusCode !== 200) {
               const error = object(parsed);
               exactKeys(error, ["schemaVersion", "operation", "code", "message"]);
-              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "observation_unavailable", "observation_rejected", "retire_rejected", "assign_rejected", "hold_rejected", "drain_rejected", "deadline_exceeded", "internal_error"]);
+              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "observation_unavailable", "observation_rejected", "retire_rejected", "assign_rejected", "hold_rejected", "drain_rejected", "rebootstrap_rejected", "deadline_exceeded", "internal_error"]);
               if (error.schemaVersion !== schemaVersion || error.operation !== "error" || typeof error.code !== "string" || !codes.has(error.code) || typeof error.message !== "string" || error.message.length < 1 || error.message.length > 256) {
                 throw new Error("MicroK8s worker issuer returned an invalid error response");
               }

@@ -1554,6 +1554,13 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 			if quarantined {
 				return nil
 			}
+			// The Node is already in bootstrap quarantine: never released, or
+			// returned there by the control plane (rebootstrap). A fresh worker
+			// stays quarantined until it leaves the cluster, rather than having
+			// the taint removed and becoming schedulable first.
+			if plan.Mode == client.NodeModeFresh {
+				return nil
+			}
 			break
 		}
 	}
