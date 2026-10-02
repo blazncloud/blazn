@@ -1189,6 +1189,24 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 	case "label":
 		return e.applyClusterMutation(ctx, plan, m, join, false)
 	case "taint":
+		if isBootstrapTaintMutation(m) && join != nil {
+			// A repair re-applies every signed mutation. Once the control
+			// plane has released an activated node (bootstrap taint removed,
+			// eligibility set), the bootstrap taint is satisfied: putting it
+			// back would leave the Node half released, and under
+			// NodeRestriction the node's credential may not change taints.
+			// Verification already skips it for a released Node.
+			state, err := e.readCapacityNode(ctx, plan, join.ExpectedNodeName)
+			if err != nil {
+				return err
+			}
+			if state.UID != join.ExpectedNodeUID {
+				return errors.New("bootstrap taint node UID differs from binding")
+			}
+			if released, err := validateCapacityState(state); err != nil || released {
+				return err
+			}
+		}
 		return e.applyClusterMutation(ctx, plan, m, join, false)
 	case "firewall":
 		_, err := e.Commands.Run(ctx, "/usr/sbin/ufw", "allow", strconv.FormatInt(number(m.Desired["port"]), 10)+"/"+stringValue(m.Desired["protocol"]))
