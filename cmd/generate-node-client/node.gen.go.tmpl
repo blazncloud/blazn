@@ -130,6 +130,15 @@ type NodeDrainResponse struct {
 	Drained bool `json:"drained"`
 }
 
+// NodeRebootstrapRequest asks the control plane to return the node's own
+// bound Kubernetes Node to bootstrap quarantine before it is uninstalled. It
+// is proven by the node identity over blazn-node-rebootstrap-v1.
+type NodeRebootstrapRequest = NodeDrainRequest
+
+type NodeRebootstrapResponse struct {
+	Rebootstrapped bool `json:"rebootstrapped"`
+}
+
 type NodeActivationRequest struct {
 	ExpectedVersion    int64              `json:"expectedVersion"`
 	Receipt            NodeInstallReceipt `json:"receipt"`
@@ -2496,6 +2505,18 @@ func (c *Client) DrainNode(ctx context.Context, nodeProof string, request NodeDr
 		return output, fmt.Errorf("node drain sentAt is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/drains", "", nodeProof, "", request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RebootstrapNode(ctx context.Context, nodeProof string, request NodeRebootstrapRequest) (NodeRebootstrapResponse, error) {
+	var output NodeRebootstrapResponse
+	if nodeProof == "" || !nodeUUIDPattern.MatchString(request.NodeID) || request.IdentityGeneration < 1 || !validKubernetesBinding(request.KubernetesBinding) {
+		return output, fmt.Errorf("node rebootstrap request is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, request.SentAt); err != nil {
+		return output, fmt.Errorf("node rebootstrap sentAt is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/rebootstraps", "", nodeProof, "", request, &output, http.StatusOK)
 	return output, err
 }
 

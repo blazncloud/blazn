@@ -124,6 +124,15 @@ type Installer struct {
 	verifyNoSymlink func(string) error
 	lastRollbackErr error
 	drainer         func(context.Context) error
+	rebootstrapper  func(context.Context) error
+}
+
+// SetRebootstrapper installs the request that asks the control plane to
+// return this node's Kubernetes Node to bootstrap quarantine before its
+// bootstrap taint is rolled back at uninstall. A failed request is not fatal:
+// the platform's own re-quarantine still runs where it is allowed.
+func (i *Installer) SetRebootstrapper(rebootstrapper func(context.Context) error) {
+	i.rebootstrapper = rebootstrapper
 }
 
 // SetDrainer installs the request that asks the control plane to drain this
@@ -679,8 +688,18 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 	if err := i.state.SaveWAL(*wal); err != nil {
 		return residues, err
 	}
+	rebootstrapRequested := false
 	for index := len(wal.Mutations) - 1; index >= 0; index-- {
 		entry := &wal.Mutations[index]
+		if wal.Lifecycle == "uninstall" && plan.Mode == client.NodeModeFresh && i.rebootstrapper != nil && !rebootstrapRequested &&
+			(entry.Status == "applied" || entry.Status == "pending") {
+			if mutation, ok := byOrdinal[entry.Ordinal]; ok && isBootstrapTaintMutation(mutation) {
+				rebootstrapRequested = true
+				if err := i.rebootstrapper(ctx); err != nil {
+					log.Printf("node uninstall: control-plane rebootstrap failed; re-quarantining the node locally: %v", err)
+				}
+			}
+		}
 		// A fresh worker leaves the shared cluster before its MicroK8s
 		// package is rolled back or retained, whichever uninstall chose.
 		if wal.Lifecycle == "uninstall" && plan.Mode == client.NodeModeFresh && !wal.ClusterLeft && entry.Kind == "package" && entry.Target == "microk8s" {

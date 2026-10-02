@@ -218,6 +218,7 @@ func (c *CommandRuntime) Uninstall(ctx context.Context, removeManagedRuntime boo
 		return client.NodeInstallReceipt{}, err
 	}
 	c.Installer.SetDrainer(func(ctx context.Context) error { return c.drainNode(ctx, state, identity) })
+	c.Installer.SetRebootstrapper(func(ctx context.Context) error { return c.rebootstrapNode(ctx, state, identity) })
 	receipt, err := c.Installer.Uninstall(ctx, state.Exchange.Plan, state.Exchange.Identity, identity, removeManagedRuntime)
 	if err != nil {
 		return receipt, err
@@ -261,6 +262,30 @@ func (c *CommandRuntime) drainNode(ctx context.Context, state RuntimeState, iden
 		return err
 	}
 	_, err = api.DrainNode(ctx, proof, request)
+	return err
+}
+
+type rebootstrapAPI interface {
+	RebootstrapNode(context.Context, string, client.NodeRebootstrapRequest) (client.NodeRebootstrapResponse, error)
+}
+
+// rebootstrapNode asks the control plane to return this node's own
+// Kubernetes Node to bootstrap quarantine, proven by the node identity.
+func (c *CommandRuntime) rebootstrapNode(ctx context.Context, state RuntimeState, identity Identity) error {
+	if c.Service == nil || state.KubernetesBinding == nil {
+		return errors.New("node rebootstrap requires an active Kubernetes binding")
+	}
+	api, ok := c.Service.api.(rebootstrapAPI)
+	if !ok {
+		return errors.New("node rebootstrap API is unavailable")
+	}
+	request := client.NodeRebootstrapRequest{NodeID: state.Exchange.Plan.NodeID, IdentityGeneration: state.Exchange.Identity.Generation,
+		SentAt: time.Now().UTC().Format(time.RFC3339), KubernetesBinding: *state.KubernetesBinding}
+	proof, err := nodeProof(identity.PrivateKey, "blazn-node-rebootstrap-v1", request)
+	if err != nil {
+		return err
+	}
+	_, err = api.RebootstrapNode(ctx, proof, request)
 	return err
 }
 

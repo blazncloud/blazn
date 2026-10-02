@@ -409,6 +409,85 @@ func (b *MicroK8sBackend) Drain(ctx context.Context, name, uid string) (bool, er
 	return true, nil
 }
 
+// Rebootstrap returns a Blazn worker's Node to bootstrap quarantine before
+// it is uninstalled: it adds blazn.dev/bootstrap=pending:NoSchedule and
+// removes the sandbox eligibility label, in one patch preconditioned on the
+// observed resourceVersion that keeps every other label and taint. The node
+// agent then only observes the quarantined state, so its own credential need
+// not change taints (NodeRestriction, M0.9). It returns false when the Node
+// is already quarantined, and refuses a control-plane Node or one without a
+// Blazn marker.
+func (b *MicroK8sBackend) Rebootstrap(ctx context.Context, name, uid string) (bool, error) {
+	if err := b.validateConfiguration(); err != nil {
+		return false, err
+	}
+	if !namePattern.MatchString(name) || !uuidPattern.MatchString(uid) {
+		return false, fmt.Errorf("worker rebootstrap binding is invalid")
+	}
+	out, err := b.Runner.Run(ctx, b.KubectlPath, []string{"get", "node", name, "-o", "json"})
+	if err != nil {
+		return false, err
+	}
+	var node struct {
+		Metadata struct {
+			Name, UID, ResourceVersion string
+			Labels                     map[string]string
+		} `json:"metadata"`
+		Spec struct {
+			Taints []map[string]any `json:"taints"`
+		} `json:"spec"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&node); err != nil || node.Metadata.Name != name || node.Metadata.ResourceVersion == "" {
+		return false, fmt.Errorf("MicroK8s returned an invalid Node observation")
+	}
+	if node.Metadata.UID != uid {
+		return false, &ProtocolError{Code: "binding_conflict", Message: "Node UID differs from the rebootstrapped binding"}
+	}
+	blazn := node.Metadata.Labels["blazn.dev/node"] == "true"
+	bootstrapped := false
+	for _, taint := range node.Spec.Taints {
+		key, _ := taint["key"].(string)
+		if key == "blazn.dev/sandbox-node" && taint["value"] == "true" && taint["effect"] == "NoSchedule" {
+			blazn = true
+		}
+		if key == BootstrapTaintKey {
+			if taint["value"] != "pending" || taint["effect"] != "NoSchedule" {
+				return false, &ProtocolError{Code: "rebootstrap_rejected", Message: "Node carries a foreign bootstrap taint"}
+			}
+			bootstrapped = true
+		}
+	}
+	if !blazn || isControlPlaneNode(node.Metadata.Labels) {
+		return false, &ProtocolError{Code: "rebootstrap_rejected", Message: "Node is not a Blazn worker"}
+	}
+	_, eligible := node.Metadata.Labels[SandboxEligibleLabel]
+	if bootstrapped && !eligible {
+		return false, nil
+	}
+	labels := make(map[string]string, len(node.Metadata.Labels))
+	for key, value := range node.Metadata.Labels {
+		if key != SandboxEligibleLabel {
+			labels[key] = value
+		}
+	}
+	taints := append([]map[string]any{}, node.Spec.Taints...)
+	if !bootstrapped {
+		taints = append(taints, map[string]any{"key": BootstrapTaintKey, "value": "pending", "effect": "NoSchedule"})
+	}
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/metadata/resourceVersion", "value": node.Metadata.ResourceVersion},
+		{"op": "add", "path": "/metadata/labels", "value": labels},
+		{"op": "add", "path": "/spec/taints", "value": taints},
+	})
+	if err != nil {
+		return false, err
+	}
+	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"patch", "node", name, "--type=json", "-p", string(patch)}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // PlacementHoldTaint keeps new sandboxes off a Blazn node that is paused,
 // quarantined, draining, or offline. Sandbox Pods may tolerate only the
 // sandbox-node taint, so no sandbox can tolerate this one.

@@ -8,6 +8,8 @@ export interface CreateEnrollmentInput { name: string; mode: "fresh" | "adopt"; 
 export interface ExchangeEnrollmentInput { token: string; machineFingerprint: string; nodePublicKey: string; platform: NodePlatform; architecture: NodeArchitecture; kubernetesBinding?: KubernetesBinding }
 export interface HeartbeatInput { nodeId: string; identityGeneration: number; bootId: string; sequence: number; sentAt: string; priorKubernetesResourceVersion: string; capabilityDigest: string; capability: Record<string, unknown> }
 
+export interface BoundNodeRequest { nodeId: string; identityGeneration: number; sentAt: string; kubernetesBinding: KubernetesBinding }
+
 export class NodeService {
   constructor(private readonly store: NodeStore, private readonly enrollmentKey: () => Promise<Buffer>, private readonly planFactory: NodePlanFactory, private readonly now: () => Date = () => new Date()) {}
 
@@ -109,15 +111,20 @@ export class NodeService {
   // retired and unschedulable. The request is proven by the node's active
   // identity over blazn-node-drain-v1 and must name the node's own bound
   // Kubernetes Node; the caller then asks the issuer to drain it.
-  async drain(input:{nodeId:string;identityGeneration:number;sentAt:string;kubernetesBinding:KubernetesBinding},proof:string):Promise<KubernetesBinding>{
+  drain(input:BoundNodeRequest,proof:string):Promise<KubernetesBinding>{return this.boundNodeRequest(input,proof,"blazn-node-drain-v1");}
+  // rebootstrap authorizes a leaving node's request to have its Node returned
+  // to bootstrap quarantine, proven over blazn-node-rebootstrap-v1.
+  rebootstrap(input:BoundNodeRequest,proof:string):Promise<KubernetesBinding>{return this.boundNodeRequest(input,proof,"blazn-node-rebootstrap-v1");}
+
+  private async boundNodeRequest(input:BoundNodeRequest,proof:string,domain:string):Promise<KubernetesBinding>{
     validUuid(input.nodeId,"nodeId");if(!Number.isSafeInteger(input.identityGeneration)||input.identityGeneration<1)invalid("identityGeneration is invalid");
     const sentAt=new Date(input.sentAt);if(Number.isNaN(sentAt.getTime()))invalid("sentAt is invalid");validateBinding(input.kubernetesBinding);
     return this.store.transaction(async tx=>{
       const identity=await tx.activeIdentity(input.nodeId,false);if(!identity||identity.trustState==="revoked"||identity.lifecycleState==="removed")throw new NodeHttpError("identity_rejected","node identity is not active");
-      if(identity.generation!==input.identityGeneration||!verifyNodeProof(identity.publicKey,"blazn-node-drain-v1",input,proof))throw new NodeHttpError("identity_rejected","node proof could not be verified");
-      if(Math.abs(this.now().getTime()-sentAt.getTime())>5*60_000)throw new NodeHttpError("heartbeat_skew","drain timestamp exceeds allowed clock skew");
+      if(identity.generation!==input.identityGeneration||!verifyNodeProof(identity.publicKey,domain,input,proof))throw new NodeHttpError("identity_rejected","node proof could not be verified");
+      if(Math.abs(this.now().getTime()-sentAt.getTime())>5*60_000)throw new NodeHttpError("heartbeat_skew","request timestamp exceeds allowed clock skew");
       const node=await requiredNode(tx,input.nodeId,false);const bound=node.kubernetesBinding,requested=input.kubernetesBinding;
-      if(!bound||bound.clusterId!==requested.clusterId||bound.nodeName!==requested.nodeName||bound.nodeUid!==requested.nodeUid)throw new NodeHttpError("version_conflict","drain Kubernetes binding is not this Node's binding");
+      if(!bound||bound.clusterId!==requested.clusterId||bound.nodeName!==requested.nodeName||bound.nodeUid!==requested.nodeUid)throw new NodeHttpError("version_conflict","request Kubernetes binding is not this Node's binding");
       return bound;
     }).catch(mapStoreError);
   }

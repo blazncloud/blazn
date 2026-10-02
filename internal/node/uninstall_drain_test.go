@@ -20,13 +20,15 @@ func (p leavingPlatform) LeaveCluster(context.Context) error {
 	return nil
 }
 
-func TestUninstallAsksTheControlPlaneToDrainBeforeLeaving(t *testing.T) {
+func TestUninstallAsksTheControlPlaneToRebootstrapThenDrainBeforeLeaving(t *testing.T) {
 	for _, drainErr := range []error{nil, errors.New("control plane unreachable")} {
 		identity := testIdentity(t)
 		plan := installPlan()
 		plan.Mode = client.NodeModeFresh
 		plan.Mutations = append(plan.Mutations, client.NodeInstallMutation{Ordinal: 3, Kind: "package", Action: "install", Target: "microk8s",
-			Desired: map[string]any{"name": "microk8s"}, DesiredDigest: "sha256:" + testHash})
+			Desired: map[string]any{"name": "microk8s"}, DesiredDigest: "sha256:" + testHash},
+			client.NodeInstallMutation{Ordinal: 4, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap",
+				Desired: map[string]any{"key": "blazn.dev/bootstrap", "value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash})
 		meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
 		events := []string{}
 		installer := NewInstaller(leavingPlatform{mockPlatform: &mockPlatform{failAt: -1}, events: &events}, &memoryState{})
@@ -39,12 +41,17 @@ func TestUninstallAsksTheControlPlaneToDrainBeforeLeaving(t *testing.T) {
 			events = append(events, "drain")
 			return drainErr
 		})
+		installer.SetRebootstrapper(func(context.Context) error {
+			events = append(events, "rebootstrap")
+			return drainErr
+		})
 		removed, err := installer.Uninstall(context.Background(), plan, meta, identity, false)
 		if err != nil || removed.State != "removed" {
 			t.Fatalf("drainErr=%v uninstall=%#v err=%v", drainErr, removed, err)
 		}
-		// A failed drain never blocks leaving: the local retirement mark still runs.
-		if strings.Join(events, ",") != "drain,leave" {
+		// The quarantine is requested before the bootstrap taint is rolled back,
+		// then the drain before leaving; a failed request never blocks uninstall.
+		if strings.Join(events, ",") != "rebootstrap,drain,leave" {
 			t.Fatalf("drainErr=%v events=%v", drainErr, events)
 		}
 	}
