@@ -29,6 +29,7 @@ type fakeBackend struct {
 	held                  []string
 	drained               []string
 	rebootstrapped        []string
+	cleared               []string
 	retireDeleted         bool
 	retireErr             error
 }
@@ -51,6 +52,11 @@ func (f *fakeBackend) Drain(_ context.Context, name, uid string) (bool, error) {
 func (f *fakeBackend) Rebootstrap(_ context.Context, name, uid string) (bool, error) {
 	f.rebootstrapped = append(f.rebootstrapped, name+"/"+uid)
 	return true, nil
+}
+
+func (f *fakeBackend) ClearRetiredName(_ context.Context, name string) error {
+	f.cleared = append(f.cleared, name)
+	return nil
 }
 
 func (f *fakeBackend) Retire(_ context.Context, name, uid string) (bool, error) {
