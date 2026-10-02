@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -220,10 +221,109 @@ func (b *MicroK8sBackend) Retire(ctx context.Context, name, uid string) (bool, e
 	if !blazn || controlPlane || !retired {
 		return false, &ProtocolError{Code: "retire_rejected", Message: "Node is not a Blazn worker that has left the cluster"}
 	}
+	// List the name before the Node goes, so a machine whose kubelet
+	// certificate is still valid cannot re-register under it unnoticed.
+	if err := b.updateRetiredNames(ctx, name, true); err != nil {
+		return false, err
+	}
 	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"delete", "node", name, "--wait=false"}); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// The Node registration guard (infra/frontro, M0.9) refuses a Node created by
+// a node credential under a name in retiredNodeNames. The issuer maintains
+// that list: retire adds the name, and issuing a new join credential for the
+// name removes it. A cluster without the ConfigMap has no guard to feed.
+const (
+	registrationNamespace = "blazn-test"
+	registrationConfigMap = "blazn-node-registration"
+	retiredNamesKey       = "retiredNodeNames"
+	frontroHostsKey       = "frontroHosts"
+	registrationAttempts  = 5
+)
+
+// ClearRetiredName removes name from the retired-name list before a join
+// credential is issued for it, so a reinstall under the same name can join.
+func (b *MicroK8sBackend) ClearRetiredName(ctx context.Context, name string) error {
+	if err := b.validateConfiguration(); err != nil {
+		return err
+	}
+	if !namePattern.MatchString(name) {
+		return fmt.Errorf("retired Node name is invalid")
+	}
+	return b.updateRetiredNames(ctx, name, false)
+}
+
+// updateRetiredNames adds or removes name in the registration ConfigMap's
+// sorted, comma-separated retiredNodeNames, preconditioned on the observed
+// resourceVersion and retried on a conflicting writer. It never lists a
+// Frontro host.
+func (b *MicroK8sBackend) updateRetiredNames(ctx context.Context, name string, retire bool) error {
+	for attempt := 1; ; attempt++ {
+		out, err := b.Runner.Run(ctx, b.KubectlPath, []string{"get", "configmap", registrationConfigMap, "-n", registrationNamespace, "--ignore-not-found", "-o", "json"})
+		if err != nil {
+			return err
+		}
+		if len(bytes.TrimSpace(out)) == 0 {
+			return nil
+		}
+		var configMap struct {
+			Metadata struct{ ResourceVersion string } `json:"metadata"`
+			Data     map[string]string                `json:"data"`
+		}
+		if err := json.NewDecoder(bytes.NewReader(out)).Decode(&configMap); err != nil || configMap.Metadata.ResourceVersion == "" {
+			return fmt.Errorf("MicroK8s returned an invalid registration ConfigMap")
+		}
+		for _, host := range splitNames(configMap.Data[frontroHostsKey]) {
+			if retire && host == name {
+				return &ProtocolError{Code: "retire_rejected", Message: "a Frontro host is never listed as retired"}
+			}
+		}
+		current := splitNames(configMap.Data[retiredNamesKey])
+		next := make([]string, 0, len(current)+1)
+		for _, existing := range current {
+			if existing != name {
+				next = append(next, existing)
+			}
+		}
+		if retire {
+			next = append(next, name)
+		}
+		sort.Strings(next)
+		if strings.Join(next, ",") == strings.Join(current, ",") {
+			return nil
+		}
+		patch, err := json.Marshal([]map[string]any{
+			{"op": "test", "path": "/metadata/resourceVersion", "value": configMap.Metadata.ResourceVersion},
+			{"op": "add", "path": "/data/" + retiredNamesKey, "value": strings.Join(next, ",")},
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"patch", "configmap", registrationConfigMap, "-n", registrationNamespace, "--type=json", "-p", string(patch)}); err == nil {
+			return nil
+		} else if attempt >= registrationAttempts {
+			return err
+		}
+	}
+}
+
+// splitNames parses a comma-separated name list into its sorted, unique,
+// non-empty entries.
+func splitNames(value string) []string {
+	seen := map[string]bool{}
+	names := []string{}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" && !seen[part] {
+			seen[part] = true
+			names = append(names, part)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // isControlPlaneNode reports whether a Node is a control-plane or datastore

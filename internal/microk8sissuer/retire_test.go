@@ -35,6 +35,12 @@ type scriptedRunner struct {
 func (r *scriptedRunner) Run(_ context.Context, path string, args []string) ([]byte, error) {
 	call := strings.Join(args, " ")
 	r.calls = append(r.calls, call)
+	// The registration ConfigMap is scripted separately; a cluster without
+	// one is the default.
+	if len(args) > 1 && args[1] == "configmap" {
+		out := r.outputs[args[0]+" configmap"]
+		return out, nil
+	}
 	if out, ok := r.outputs[args[0]]; ok {
 		return out, nil
 	}

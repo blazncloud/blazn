@@ -35,6 +35,7 @@ type Backend interface {
 	Hold(context.Context, string, string, string) (bool, error)
 	Drain(context.Context, string, string) (bool, error)
 	Rebootstrap(context.Context, string, string) (bool, error)
+	ClearRetiredName(context.Context, string) error
 	Healthy(context.Context) error
 }
 type NodeObservation struct {
@@ -129,6 +130,11 @@ func (s *Service) issue(ctx context.Context, req Request) (IssueResponse, error)
 			if err := s.backend.Revoke(ctx, token); err != nil {
 				return &ProtocolError{Code: "revoke_required", Message: "prior token cleanup is required"}
 			}
+		}
+		// A reinstall may reuse a retired name; it must leave the registration
+		// guard's retired list before a credential for it exists.
+		if err := s.backend.ClearRetiredName(ctx, req.ExpectedNodeName); err != nil {
+			return &ProtocolError{Code: "microk8s_unavailable", Message: "retired Node name could not be cleared"}
 		}
 		state = durableState{SchemaVersion: SchemaVersion, Status: "pending", Request: req, RequestDigest: digest, TokenHash: hash(token)}
 		if err := s.writeState(path, state); err != nil {
