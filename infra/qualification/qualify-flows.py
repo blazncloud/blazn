@@ -9,7 +9,7 @@ code is printed; results are emitted as JSON.
 import json, re, shlex, subprocess, sys, time, uuid
 
 API = "https://api.blazn.frontro.com"
-VERSION = "v0.1.0-poc.135"
+VERSION = "v0.1.0-poc.136"
 RUN = time.strftime("%Y%m%d%H%M%S")
 ROOT = f"/tmp/blazn-qual-{RUN}"
 results = []
